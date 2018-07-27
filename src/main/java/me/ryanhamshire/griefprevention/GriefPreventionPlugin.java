@@ -402,6 +402,10 @@ public class GriefPreventionPlugin {
 
     private boolean validateSpongeVersion() {
         if (Sponge.getPlatform().getContainer(Component.IMPLEMENTATION).getName().equals("SpongeForge")) {
+            if (SpongeImplHooks.isDeobfuscatedEnvironment()) {
+                this.logger.info("De-obfuscated environment detected! Use at your own risk!");
+                return true;
+            }
             if (Sponge.getPlatform().getContainer(Component.IMPLEMENTATION).getVersion().isPresent()) {
                 try {
                     SPONGE_VERSION = Sponge.getPlatform().getContainer(Component.IMPLEMENTATION).getVersion().get();
@@ -424,7 +428,7 @@ public class GriefPreventionPlugin {
 
     @Listener(order = Order.LAST)
     public void onPreInit(GamePreInitializationEvent event) {
-        if (!validateSpongeVersion() || Sponge.getPlatform().getType().isClient()) {
+        if (!validateSpongeVersion() || (Sponge.getPlatform().getType().isClient() && !SpongeImplHooks.isDeobfuscatedEnvironment())) {
             return;
         }
 
