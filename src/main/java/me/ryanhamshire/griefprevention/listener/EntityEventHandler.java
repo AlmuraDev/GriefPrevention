@@ -58,9 +58,12 @@ import net.minecraft.inventory.ContainerPlayer;
 import nl.riebie.mcclans.api.ClanPlayer;
 import org.spongepowered.api.Sponge;
 import org.spongepowered.api.block.BlockSnapshot;
+import org.spongepowered.api.block.tileentity.TileEntity;
 import org.spongepowered.api.command.source.ConsoleSource;
 import org.spongepowered.api.entity.Entity;
 import org.spongepowered.api.entity.EntityTypes;
+import org.spongepowered.api.entity.ExperienceOrb;
+import org.spongepowered.api.entity.Item;
 import org.spongepowered.api.entity.living.Living;
 import org.spongepowered.api.entity.living.player.Player;
 import org.spongepowered.api.entity.living.player.User;
@@ -92,6 +95,7 @@ import org.spongepowered.api.text.chat.ChatType;
 import org.spongepowered.api.util.Tristate;
 import org.spongepowered.api.world.Location;
 import org.spongepowered.api.world.World;
+import org.spongepowered.api.world.explosion.Explosion;
 import org.spongepowered.api.world.storage.WorldProperties;
 import org.spongepowered.common.SpongeImplHooks;
 import org.spongepowered.common.data.util.NbtDataUtil;
@@ -116,7 +120,7 @@ public class EntityEventHandler {
     }
 
     @Listener(order = Order.FIRST, beforeModifications = true)
-    public void onEntityExplosionPre(ExplosionEvent.Pre event, @Root Object source) {
+    public void onEntityExplosionPre(ExplosionEvent.Pre event) {
         if (!GPFlags.EXPLOSION || !GriefPreventionPlugin.instance.claimsEnabledForWorld(event.getTargetWorld().getProperties())) {
             return;
         }
@@ -128,7 +132,27 @@ public class EntityEventHandler {
         Location<World> location = event.getExplosion().getLocation();
         GPClaim claim =  GriefPreventionPlugin.instance.dataStore.getClaimAt(location);
         User user = CauseContextHelper.getEventUser(event);
-        if(GPPermissionHandler.getClaimPermission(event, location, claim, GPPermissions.EXPLOSION, source, location, user, true) == Tristate.FALSE) {
+        Object source = event.getSource();
+        if (source instanceof Explosion) {
+            final Explosion explosion = (Explosion) source;
+            if (explosion.getSourceExplosive().isPresent()) {
+                source = explosion.getSourceExplosive().get();
+            } else {
+                Entity exploder = event.getCause().first(Entity.class).orElse(null);
+                if (exploder != null) {
+                    source = exploder;
+                }
+            }
+        }
+
+        Tristate result = Tristate.UNDEFINED;
+        if (GPFlags.EXPLOSION_SURFACE && location.getPosition().getY() > ((net.minecraft.world.World) location.getExtent()).getSeaLevel()) {
+            result = GPPermissionHandler.getClaimPermission(event, location, claim, GPPermissions.EXPLOSION_SURFACE, source, location.getBlock(), user, true);
+        } else {
+            result = GPPermissionHandler.getClaimPermission(event, location, claim, GPPermissions.EXPLOSION, source, location.getBlock(), user, true);
+        }
+
+        if(result == Tristate.FALSE) {
             event.setCancelled(true);
             GPTimings.ENTITY_EXPLOSION_PRE_EVENT.stopTimingIfSync();
             return;
@@ -150,11 +174,23 @@ public class EntityEventHandler {
         final User user = CauseContextHelper.getEventUser(event);
         Iterator<Entity> iterator = event.getEntities().iterator();
         GPClaim targetClaim = null;
+        Object source = event.getSource();
+        if (source instanceof Explosion) {
+            final Explosion explosion = (Explosion) source;
+            if (explosion.getSourceExplosive().isPresent()) {
+                source = explosion.getSourceExplosive().get();
+            } else {
+                Entity exploder = event.getCause().first(Entity.class).orElse(null);
+                if (exploder != null) {
+                    source = exploder;
+                }
+            }
+        }
+
         while (iterator.hasNext()) {
             Entity entity = iterator.next();
             targetClaim =  GriefPreventionPlugin.instance.dataStore.getClaimAt(entity.getLocation(), targetClaim);
-
-            if (GPPermissionHandler.getClaimPermission(event, entity.getLocation(), targetClaim, GPPermissions.ENTITY_DAMAGE, event.getCause().root(), entity, user) == Tristate.FALSE) {
+            if (GPPermissionHandler.getClaimPermission(event, entity.getLocation(), targetClaim, GPPermissions.ENTITY_DAMAGE, source, entity, user) == Tristate.FALSE) {
                 iterator.remove();
             }
         }
@@ -162,16 +198,27 @@ public class EntityEventHandler {
     }
 
     @Listener(order = Order.FIRST, beforeModifications = true)
-    public void onEntitySpawn(SpawnEntityEvent event, @Root Object source) {
+    public void onEntitySpawn(SpawnEntityEvent event) {
+        Object source = event.getSource();
         if (source instanceof ConsoleSource || !GPFlags.ENTITY_SPAWN || event.getEntities().isEmpty()) {
             return;
         }
+
+        // If root cause is damage source, look for target as that should be passed instead
+        // Ex. Entity dies and drops an item would be after EntityDamageSource
+        if (source instanceof DamageSource) {
+            final Object target = event.getCause().after(DamageSource.class).orElse(null);
+            if (target != null) {
+                source = target;
+            }
+        }
+
         final boolean isChunkSpawn = event instanceof SpawnEntityEvent.ChunkLoad;
         if (isChunkSpawn && !GPFlags.ENTITY_CHUNK_SPAWN) {
             return;
         }
         if (event instanceof DropItemEvent) {
-            if (!GPFlags.ITEM_SPAWN) {
+            if (!GPFlags.ITEM_DROP) {
                 return;
             }
             // only handle item spawns from non-living
@@ -193,12 +240,13 @@ public class EntityEventHandler {
 
         GPTimings.ENTITY_SPAWN_EVENT.startTimingIfSync();
         final User user = CauseContextHelper.getEventUser(event);
+        final Object actualSource = source;
         event.filterEntities(new Predicate<Entity>() {
             GPClaim targetClaim = null;
 
             @Override
             public boolean test(Entity entity) {
-                if (entity instanceof EntityXPOrb) {
+                if (entity instanceof ExperienceOrb) {
                     return true;
                 }
 
@@ -219,11 +267,7 @@ public class EntityEventHandler {
                     permission = GPPermissions.ENTITY_CHUNK_SPAWN;
                 }
 
-                if (targetClaim.isUserTrusted(user, TrustType.BUILDER)) {
-                    return true;
-                }
-
-                if (!isChunkSpawn && entity instanceof EntityItem) {
+                if (!isChunkSpawn && entity instanceof Item) {
                     if (user == null) {
                         return true;
                     }
@@ -234,18 +278,18 @@ public class EntityEventHandler {
                         return true;
                     }
                     permission = GPPermissions.ITEM_SPAWN;
-                    if (source instanceof BlockSnapshot) {
-                        final BlockSnapshot block = (BlockSnapshot) source;
+                    if (actualSource instanceof BlockSnapshot) {
+                        final BlockSnapshot block = (BlockSnapshot) actualSource;
                         final Location<World> location = block.getLocation().orElse(null);
                         if (location != null) {
                             if (GriefPreventionPlugin.isTargetIdBlacklisted(ClaimFlag.BLOCK_BREAK.toString(), block, world.getProperties())) {
                                 return true;
                             }
-                            final Tristate result = GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.BLOCK_BREAK, source, block, user, true);
+                            final Tristate result = GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.BLOCK_BREAK, actualSource, block, user, TrustType.ACCESSOR, true);
                             if (result != Tristate.UNDEFINED) {
                                 if (result == Tristate.TRUE) {
                                     // Check if item drop is allowed
-                                    if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, permission, source, entity, user, true) == Tristate.FALSE) {
+                                    if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, permission, actualSource, entity, user, TrustType.ACCESSOR, true) == Tristate.FALSE) {
                                         return false;
                                     }
                                     return true;
@@ -256,7 +300,7 @@ public class EntityEventHandler {
                     }
                 }
 
-                if (GPPermissionHandler.getClaimPermission(event, entity.getLocation(), targetClaim, permission, source, entity, user, true) == Tristate.FALSE) {
+                if (GPPermissionHandler.getClaimPermission(event, entity.getLocation(), targetClaim, permission, actualSource, entity, user, TrustType.ACCESSOR, true) == Tristate.FALSE) {
                     return false;
                 }
                 return true;
@@ -268,16 +312,6 @@ public class EntityEventHandler {
 
     @Listener(order = Order.FIRST, beforeModifications = true)
     public void onEntityAttack(AttackEntityEvent event, @First DamageSource damageSource) {
-        if (!GPFlags.ENTITY_DAMAGE || !GriefPreventionPlugin.instance.claimsEnabledForWorld(event.getTargetEntity().getWorld().getProperties())) {
-            return;
-        }
-        if (GriefPreventionPlugin.isSourceIdBlacklisted(ClaimFlag.ENTITY_DAMAGE.toString(), damageSource, event.getTargetEntity().getWorld().getProperties())) {
-            return;
-        }
-        if (GriefPreventionPlugin.isTargetIdBlacklisted(ClaimFlag.ENTITY_DAMAGE.toString(), event.getTargetEntity(), event.getTargetEntity().getWorld().getProperties())) {
-            return;
-        }
-
         GPTimings.ENTITY_ATTACK_EVENT.startTimingIfSync();
         if (protectEntity(event, event.getTargetEntity(), event.getCause(), damageSource)) {
             event.setCancelled(true);
@@ -287,16 +321,6 @@ public class EntityEventHandler {
 
     @Listener(order = Order.FIRST, beforeModifications = true)
     public void onEntityDamage(DamageEntityEvent event, @First DamageSource damageSource) {
-        if (!GPFlags.ENTITY_DAMAGE || !GriefPreventionPlugin.instance.claimsEnabledForWorld(event.getTargetEntity().getWorld().getProperties())) {
-            return;
-        }
-        if (GriefPreventionPlugin.isSourceIdBlacklisted(ClaimFlag.ENTITY_DAMAGE.toString(), damageSource, event.getTargetEntity().getWorld().getProperties())) {
-            return;
-        }
-        if (GriefPreventionPlugin.isTargetIdBlacklisted(ClaimFlag.ENTITY_DAMAGE.toString(), event.getTargetEntity(), event.getTargetEntity().getWorld().getProperties())) {
-            return;
-        }
-
         GPTimings.ENTITY_DAMAGE_EVENT.startTimingIfSync();
         if (protectEntity(event, event.getTargetEntity(), event.getCause(), damageSource)) {
             event.setCancelled(true);
@@ -305,24 +329,42 @@ public class EntityEventHandler {
     }
 
     public boolean protectEntity(Event event, Entity targetEntity, Cause cause, DamageSource damageSource) {
+        if (!GPFlags.ENTITY_DAMAGE || !GriefPreventionPlugin.instance.claimsEnabledForWorld(targetEntity.getWorld().getProperties())) {
+            return false;
+        }
+        if (GriefPreventionPlugin.isTargetIdBlacklisted(ClaimFlag.ENTITY_DAMAGE.toString(), targetEntity, targetEntity.getWorld().getProperties())) {
+            return false;
+        }
+
         User user = CauseContextHelper.getEventUser(event);
         Player player = cause.first(Player.class).orElse(null);
-        Entity sourceEntity = null;
+        Object source = damageSource;
         EntityDamageSource entityDamageSource = null;
-        if (damageSource instanceof EntityDamageSource) {
+        final TileEntity tileEntity = cause.first(TileEntity.class).orElse(null);
+        // TE takes priority over entity damage sources
+        if (tileEntity != null) {
+            source = tileEntity;
+        } else if (damageSource instanceof EntityDamageSource) {
             entityDamageSource = (EntityDamageSource) damageSource;
-            sourceEntity = entityDamageSource.getSource();
+            source = entityDamageSource.getSource();
             if (entityDamageSource instanceof IndirectEntityDamageSource) {
-                sourceEntity = ((IndirectEntityDamageSource) entityDamageSource).getIndirectSource();
+                final Entity indirectSource = ((IndirectEntityDamageSource) entityDamageSource).getIndirectSource();
+                if (indirectSource != null) {
+                    source = indirectSource;
+                }
             }
-            if (sourceEntity instanceof Player) {
+            if (source instanceof Player) {
                 if (user == null) {
-                    user = (User) sourceEntity;
+                    user = (User) source;
                 }
                 if (player == null) {
-                    player = (Player) sourceEntity;
+                    player = (Player) source;
                 }
             }
+        }
+
+        if (GriefPreventionPlugin.isSourceIdBlacklisted(ClaimFlag.ENTITY_DAMAGE.toString(), source, targetEntity.getWorld().getProperties())) {
+            return false;
         }
 
         GPPlayerData playerData = null;
@@ -333,13 +375,9 @@ public class EntityEventHandler {
             return false;
         }
 
-        GPClaim claim = this.dataStore.getClaimAt(targetEntity.getLocation(), playerData != null ? playerData.lastClaim.get() : null);
-        Tristate result = GPPermissionHandler.getClaimPermission(event, targetEntity.getLocation(), claim, GPPermissions.ENTITY_DAMAGE, sourceEntity, targetEntity, user, true);
-        if (result == Tristate.FALSE) {
-            return true;
-        }
-        result = GPPermissionHandler.getClaimPermission(event, targetEntity.getLocation(), claim, GPPermissions.ENTITY_DAMAGE, damageSource, targetEntity, user, true);
-        if (result == Tristate.FALSE) {
+        final GPClaim claim = this.dataStore.getClaimAt(targetEntity.getLocation(), playerData != null ? playerData.lastClaim.get() : null);
+        final TrustType trustType = TrustType.BUILDER;
+        if (GPPermissionHandler.getClaimPermission(event, targetEntity.getLocation(), claim, GPPermissions.ENTITY_DAMAGE, source, targetEntity, user, trustType, true) == Tristate.FALSE) {
             return true;
         }
 
@@ -349,14 +387,14 @@ public class EntityEventHandler {
         }
 
         // Protect owned entities anywhere in world
-        if (sourceEntity != null && !(SpongeImplHooks.isCreatureOfType((net.minecraft.entity.Entity) targetEntity, EnumCreatureType.MONSTER))) {
+        if (entityDamageSource != null && !(SpongeImplHooks.isCreatureOfType((net.minecraft.entity.Entity) targetEntity, EnumCreatureType.MONSTER))) {
             Tristate perm = Tristate.UNDEFINED;
             // Ignore PvP checks for owned entities
-            if (!(sourceEntity instanceof Player) && !(targetEntity instanceof Player)) {
-                if (sourceEntity instanceof User) {
-                    User sourceUser = (User) sourceEntity;
-                    perm = GPPermissionHandler.getClaimPermission(event, targetEntity.getLocation(), claim, GPPermissions.ENTITY_DAMAGE, sourceEntity, targetEntity, sourceUser);
-                    if (targetEntity instanceof EntityLivingBase && perm == Tristate.TRUE) {
+            if (!(source instanceof Player) && !(targetEntity instanceof Player)) {
+                if (source instanceof User) {
+                    User sourceUser = (User) source;
+                    perm = GPPermissionHandler.getClaimPermission(event, targetEntity.getLocation(), claim, GPPermissions.ENTITY_DAMAGE, source, targetEntity, sourceUser, trustType, true);
+                    if (targetEntity instanceof Living && perm == Tristate.TRUE) {
                         return false;
                     }
                     Optional<UUID> creatorUuid = targetEntity.getCreator();
@@ -372,15 +410,12 @@ public class EntityEventHandler {
                     return false;
                 } else {
                     if (targetEntity instanceof Player) {
-                        if (SpongeImplHooks.isCreatureOfType((net.minecraft.entity.Entity) sourceEntity, EnumCreatureType.MONSTER)) {
-                            if (user == null) {
-                                user = ((IMixinEntity) sourceEntity).getTrackedPlayer(NbtDataUtil.SPONGE_ENTITY_CREATOR).orElse(null);
-                            }
-                            if (GPPermissionHandler.getClaimPermission(event, targetEntity.getLocation(), claim, GPPermissions.ENTITY_DAMAGE, sourceEntity, targetEntity, user) != Tristate.TRUE) {
+                        if (SpongeImplHooks.isCreatureOfType((net.minecraft.entity.Entity) source, EnumCreatureType.MONSTER)) {
+                            if (GPPermissionHandler.getClaimPermission(event, targetEntity.getLocation(), claim, GPPermissions.ENTITY_DAMAGE, source, targetEntity, user, trustType, true) != Tristate.TRUE) {
                                 return true;
                             }
                         }
-                    } else if (targetEntity instanceof EntityLivingBase && !SpongeImplHooks.isCreatureOfType((net.minecraft.entity.Entity) targetEntity, EnumCreatureType.MONSTER)) {
+                    } else if (targetEntity instanceof Living && !SpongeImplHooks.isCreatureOfType((net.minecraft.entity.Entity) targetEntity, EnumCreatureType.MONSTER)) {
                         if (user != null && !user.getUniqueId().equals(claim.getOwnerUniqueId()) && perm != Tristate.TRUE) {
                             return true;
                         }
@@ -390,7 +425,7 @@ public class EntityEventHandler {
         }
 
         // the rest is only interested in entities damaging entities (ignoring environmental damage)
-        if (!(damageSource instanceof EntityDamageSource)) {
+        if (entityDamageSource == null || tileEntity != null) {
             return false;
         }
 
@@ -398,11 +433,11 @@ public class EntityEventHandler {
         Player attacker = null;
         Projectile arrow = null;
 
-        if (sourceEntity != null) {
-            if (sourceEntity instanceof Player) {
-                attacker = (Player) sourceEntity;
-            } else if (sourceEntity instanceof Projectile) {
-                arrow = (Projectile) sourceEntity;
+        if (source != null) {
+            if (source instanceof Player) {
+                attacker = (Player) source;
+            } else if (source instanceof Projectile) {
+                arrow = (Projectile) source;
                 if (arrow.getShooter() instanceof Player) {
                     attacker = (Player) arrow.getShooter();
                 }
@@ -478,7 +513,7 @@ public class EntityEventHandler {
             }
         }
 
-        if (GPPermissionHandler.getClaimPermission(event, targetEntity.getLocation(), claim, GPPermissions.ENTITY_DAMAGE, attacker, targetEntity, user) == Tristate.FALSE) {
+        if (GPPermissionHandler.getClaimPermission(event, targetEntity.getLocation(), claim, GPPermissions.ENTITY_DAMAGE, attacker, targetEntity, user, trustType, true) == Tristate.FALSE) {
             return true;
         }
 
@@ -570,7 +605,7 @@ public class EntityEventHandler {
 
     // when an entity drops items on death
     @Listener(order = Order.FIRST, beforeModifications = true)
-    public void onEntityDropItemDeath(DropItemEvent.Destruct event, @Root Living livingEntity) {
+    public void onEntityDropItemDeath(DropItemEvent.Destruct event) {
         if (!GPFlags.ITEM_DROP || event.getEntities().isEmpty()) {
             return;
         }
@@ -579,17 +614,61 @@ public class EntityEventHandler {
         if (!GriefPreventionPlugin.instance.claimsEnabledForWorld(world.getProperties())) {
             return;
         }
-        if (GriefPreventionPlugin.isSourceIdBlacklisted(ClaimFlag.ITEM_DROP.toString(), livingEntity, world.getProperties())) {
+
+        Object source = event.getSource();
+        // If root cause is damage source, look for target as that should be passed instead
+        // Ex. Entity dies and drops an item would be after EntityDamageSource
+        if (source instanceof DamageSource) {
+            final Object target = event.getCause().after(DamageSource.class).orElse(null);
+            if (target != null) {
+                source = target;
+            }
+        }
+        if (!(source instanceof Entity)) {
+            return;
+        }
+
+        final Entity entity = (Entity) source;
+        if (GriefPreventionPlugin.isSourceIdBlacklisted(ClaimFlag.ITEM_DROP.toString(), entity, world.getProperties())) {
             return;
         }
 
         GPTimings.ENTITY_DROP_ITEM_DEATH_EVENT.startTimingIfSync();
         // special rule for creative worlds: killed entities don't drop items or experience orbs
-        if (GriefPreventionPlugin.instance.claimModeIsActive(livingEntity.getLocation().getExtent().getProperties(), ClaimsMode.Creative)) {
+        if (GriefPreventionPlugin.instance.claimModeIsActive(entity.getLocation().getExtent().getProperties(), ClaimsMode.Creative)) {
             event.setCancelled(true);
             GPTimings.ENTITY_DROP_ITEM_DEATH_EVENT.stopTimingIfSync();
             return;
         }
+
+        final User user = CauseContextHelper.getEventUser(event);
+        event.filterEntities(new Predicate<Entity>() {
+            GPClaim targetClaim = null;
+
+            @Override
+            public boolean test(Entity item) {
+                if (GriefPreventionPlugin.isTargetIdBlacklisted(ClaimFlag.ITEM_DROP.toString(), item, world.getProperties())) {
+                    return true;
+                }
+
+                targetClaim = GriefPreventionPlugin.instance.dataStore.getClaimAt(item.getLocation(), targetClaim);
+                if (targetClaim == null) {
+                    return true;
+                }
+
+                if (user == null) {
+                    return true;
+                }
+                if (GriefPreventionPlugin.isTargetIdBlacklisted(ClaimFlag.ITEM_DROP.toString(), item, world.getProperties())) {
+                    return true;
+                }
+
+                if (GPPermissionHandler.getClaimPermission(event, item.getLocation(), targetClaim, GPPermissions.ITEM_DROP, entity, item, user, TrustType.ACCESSOR, true) == Tristate.FALSE) {
+                    return false;
+                }
+                return true;
+            }
+        });
 
         GPTimings.ENTITY_DROP_ITEM_DEATH_EVENT.stopTimingIfSync();
     }
@@ -648,7 +727,7 @@ public class EntityEventHandler {
                 Sponge.getEventManager().post(gpEvent);
                 if (gpEvent.isCancelled()) {
                     event.setCancelled(true);
-                    if (EntityUtils.getOwnerUniqueId(entity) == null) {
+                    if (!(entity instanceof Player) && EntityUtils.getOwnerUniqueId(entity) == null) {
                         ((net.minecraft.entity.Entity) entity).setDead();
                     }
                 }
@@ -704,7 +783,7 @@ public class EntityEventHandler {
             Sponge.getEventManager().post(gpEvent);
             if (gpEvent.isCancelled()) {
                 event.setCancelled(true);
-                if (EntityUtils.getOwnerUniqueId(entity) == null) {
+                if (!(entity instanceof Player) && EntityUtils.getOwnerUniqueId(entity) == null) {
                     ((net.minecraft.entity.Entity) entity).setDead();
                 }
                 final Text cancelMessage = gpEvent.getMessage().orElse(null);
@@ -780,7 +859,7 @@ public class EntityEventHandler {
                 }
 
                 event.setCancelled(true);
-                if (EntityUtils.getOwnerUniqueId(entity) == null) {
+                if (!(entity instanceof Player) && EntityUtils.getOwnerUniqueId(entity) == null) {
                     ((net.minecraft.entity.Entity) entity).setDead();
                 }
                 GPTimings.ENTITY_MOVE_EVENT.stopTimingIfSync();

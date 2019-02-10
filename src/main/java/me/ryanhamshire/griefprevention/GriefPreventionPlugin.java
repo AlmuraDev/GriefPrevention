@@ -125,6 +125,7 @@ import me.ryanhamshire.griefprevention.listener.PlayerEventHandler;
 import me.ryanhamshire.griefprevention.listener.WorldEventHandler;
 import me.ryanhamshire.griefprevention.logging.CustomLogEntryTypes;
 import me.ryanhamshire.griefprevention.logging.CustomLogger;
+import me.ryanhamshire.griefprevention.migrator.GPPermissionMigrator;
 import me.ryanhamshire.griefprevention.permission.GPBlacklists;
 import me.ryanhamshire.griefprevention.permission.GPOptions;
 import me.ryanhamshire.griefprevention.permission.GPPermissionHandler;
@@ -146,7 +147,7 @@ import net.minecraft.entity.player.InventoryPlayer;
 import net.minecraft.item.ItemStack;
 import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.lang3.LocaleUtils;
-import org.bstats.sponge.Metrics;
+import org.bstats.sponge.Metrics2;
 import org.slf4j.Logger;
 import org.spongepowered.api.Platform.Component;
 import org.spongepowered.api.Sponge;
@@ -232,7 +233,7 @@ public class GriefPreventionPlugin {
     public static String SPONGE_VERSION = "unknown";
     @Inject public PluginContainer pluginContainer;
     @Inject private Logger logger;
-    @Inject private Metrics metrics;
+    @Inject private Metrics2 metrics;
     @Inject @ConfigDir(sharedRoot = false)
     private Path configPath;
     public MessageStorage messageStorage;
@@ -292,6 +293,7 @@ public class GriefPreventionPlugin {
     public static final Text GP_TEXT = Text.of(TextColors.RESET, "[", TextColors.AQUA, "GP", TextColors.WHITE, "] ");
 
     public static final Map<String, String> ID_MAP = Maps.newHashMap();
+    public static final List<String> ITEM_IDS = new ArrayList<>();
 
     public Path getConfigPath() {
         return this.configPath;
@@ -314,7 +316,7 @@ public class GriefPreventionPlugin {
         }
     }
 
-    public static void addEventLogEntry(Event event, GPClaim claim, Location<World> location, Subject eventSubject, String sourceId, String targetId, Subject permissionSubject, String permission, Tristate result) {
+    public static void addEventLogEntry(Event event, GPClaim claim, Location<World> location, Subject eventSubject, String sourceId, String targetId, Subject permissionSubject, String permission, String trust, Tristate result) {
         for (GPDebugData debugEntry : GriefPreventionPlugin.instance.getDebugUserMap().values()) {
             final CommandSource debugSource = debugEntry.getSource();
             final User debugUser = debugEntry.getTarget();
@@ -343,18 +345,19 @@ public class GriefPreventionPlugin {
             }
             // record
             if (debugEntry.isRecording()) {
-                String messageEvent = permission;
-                if (!permission.contains("trust.")) {
-                    permission = permission.replace("griefprevention.flag.", "");
-                    messageEvent = GPPermissionHandler.getFlagFromPermission(permission).toString();
-                }
+                String messageFlag = permission;
+                permission = permission.replace("griefprevention.flag.", "");
+                messageFlag = GPPermissionHandler.getFlagFromPermission(permission).toString();
                 final String messageSource = sourceId == null ? "none" : sourceId;
                 String messageTarget = targetId == null ? "none" : targetId;
                 if (messageTarget.endsWith(".0")) {
                     messageTarget = messageTarget.substring(0, messageTarget.length() - 2);
                 }
+                if (trust == null) {
+                    trust = "none";
+                }
                 final String messageLocation = location == null ? "none" : location.getBlockPosition().toString();
-                debugEntry.addRecord(messageEvent, messageSource, messageTarget, messageLocation, messageUser, result);
+                debugEntry.addRecord(messageFlag, trust, messageSource, messageTarget, messageLocation, messageUser, result);
                 continue;
             }
 
@@ -410,7 +413,7 @@ public class GriefPreventionPlugin {
                 try {
                     SPONGE_VERSION = Sponge.getPlatform().getContainer(Component.IMPLEMENTATION).getVersion().get();
                     String build = SPONGE_VERSION.substring(Math.max(SPONGE_VERSION.length() - 4, 0));
-                    final int minSpongeBuild = 3235;
+                    final int minSpongeBuild = 3529;
                     final int spongeBuild = Integer.parseInt(build);
                     if (spongeBuild < minSpongeBuild) {
                         this.logger.error("Unable to initialize plugin. Detected SpongeForge build " + spongeBuild + " but GriefPrevention requires"
@@ -762,6 +765,16 @@ public class GriefPreventionPlugin {
         if (this.dataStore == null) {
             try {
                 this.dataStore = new FlatFileDataStore();
+                // Migrator currently only handles pixelmon
+                // Remove pixelmon check after GP 5.0.0 update
+                if (Sponge.getPluginManager().getPlugin("pixelmon").isPresent()) {
+                    if (this.dataStore.getMigrationVersion() < DataStore.latestMigrationVersion) {
+                        GPPermissionMigrator.getInstance().migrateSubject(GLOBAL_SUBJECT);
+                        permissionService.getUserSubjects().applyToAll(GPPermissionMigrator.getInstance().migrateSubjectPermissions());
+                        permissionService.getGroupSubjects().applyToAll(GPPermissionMigrator.getInstance().migrateSubjectPermissions());
+                        this.dataStore.setMigrationVersion(DataStore.latestMigrationVersion);
+                    }
+                }
                 this.dataStore.initialize();
             } catch (Exception e) {
                 this.getLogger().info("Unable to initialize the file system data store.  Details:");
@@ -778,6 +791,7 @@ public class GriefPreventionPlugin {
         Sponge.getEventManager().registerListeners(this, new WorldEventHandler());
         if (this.nucleusApiProvider != null) {
             Sponge.getEventManager().registerListeners(this, new NucleusEventHandler());
+            this.nucleusApiProvider.registerTokens();
         }
         if (this.clanApiProvider != null) {
             Sponge.getEventManager().registerListeners(this, new MCClansEventHandler());

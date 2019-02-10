@@ -65,6 +65,7 @@ public class GPFlags {
     public static boolean ITEM_PICKUP;
     public static boolean ITEM_SPAWN;
     public static boolean ITEM_USE;
+    public static boolean LEAF_DECAY;
     public static boolean LIQUID_FLOW;
     public static boolean PORTAL_USE;
     public static boolean PROJECTILE_IMPACT_BLOCK;
@@ -108,6 +109,7 @@ public class GPFlags {
         ITEM_PICKUP  = GriefPreventionPlugin.getGlobalConfig().getConfig().modules.isProtectionModuleEnabled(ClaimFlag.ITEM_PICKUP.toString());
         ITEM_SPAWN  = GriefPreventionPlugin.getGlobalConfig().getConfig().modules.isProtectionModuleEnabled(ClaimFlag.ITEM_SPAWN.toString());
         ITEM_USE  = GriefPreventionPlugin.getGlobalConfig().getConfig().modules.isProtectionModuleEnabled(ClaimFlag.ITEM_USE.toString());
+        LEAF_DECAY  = GriefPreventionPlugin.getGlobalConfig().getConfig().modules.isProtectionModuleEnabled(ClaimFlag.LEAF_DECAY.toString());
         LIQUID_FLOW  = GriefPreventionPlugin.getGlobalConfig().getConfig().modules.isProtectionModuleEnabled(ClaimFlag.LIQUID_FLOW.toString());
         PORTAL_USE  = GriefPreventionPlugin.getGlobalConfig().getConfig().modules.isProtectionModuleEnabled(ClaimFlag.PORTAL_USE.toString());
         PROJECTILE_IMPACT_BLOCK  = GriefPreventionPlugin.getGlobalConfig().getConfig().modules.isProtectionModuleEnabled(ClaimFlag.PROJECTILE_IMPACT_BLOCK.toString());
@@ -142,7 +144,11 @@ public class GPFlags {
                         SpongeEntityType spongeEntityType = (SpongeEntityType) entityType.get();
                         if (spongeEntityType.getEnumCreatureType() != null) {
                             String creatureType = SPAWN_TYPES.inverse().get(spongeEntityType.getEnumCreatureType());
-                            claimFlag += "." + parts[0] + "." + creatureType + "." + parts[1];
+                            if (parts[1].equalsIgnoreCase("pixelmon")) {
+                                claimFlag += "." + parts[0] + ".animal";
+                            } else {
+                                claimFlag += "." + parts[0] + "." + creatureType + "." + parts[1];
+                            }
                             return claimFlag;
                         } else {
                             claimFlag += "." + parts[0] + "." + parts[1];
@@ -152,7 +158,11 @@ public class GPFlags {
                     // Unfortunately this is required until Pixelmon registers their entities correctly in FML
                     if (target.contains("pixelmon")) {
                         // If target was not found in registry, assume its a pixelmon animal
-                        claimFlag += "." + parts[0] + ".animal." + parts[1];
+                        if (parts[1].equalsIgnoreCase("pixelmon")) {
+                            claimFlag += "." + parts[0] + ".animal";
+                        } else {
+                            claimFlag += "." + parts[0] + ".animal." + parts[1];
+                        }
                         return claimFlag;
                     }
                 }

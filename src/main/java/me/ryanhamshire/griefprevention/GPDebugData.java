@@ -28,9 +28,10 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 
 import me.ryanhamshire.griefprevention.util.HttpClient;
-
+import org.spongepowered.api.Sponge;
 import org.spongepowered.api.command.CommandSource;
 import org.spongepowered.api.entity.living.player.User;
+import org.spongepowered.api.plugin.PluginContainer;
 import org.spongepowered.api.text.Text;
 import org.spongepowered.api.text.action.TextActions;
 import org.spongepowered.api.text.format.TextColors;
@@ -63,6 +64,7 @@ public class GPDebugData {
 
     private static final int MAX_LINES = 5000;
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss z");
+    private static final Text GP_TEXT = Text.of(TextColors.RESET, "[", TextColors.AQUA, "GP", TextColors.WHITE, "] ");
 
     private final CommandSource source;
     private final List<String> header;
@@ -85,18 +87,27 @@ public class GPDebugData {
         this.header.add("|-----|-------|");
         this.header.add("| GP Version | " + GriefPreventionPlugin.IMPLEMENTATION_VERSION + "|");
         this.header.add("| Sponge Version | " + GriefPreventionPlugin.SPONGE_VERSION + "|");
+        final PluginContainer lpContainer = Sponge.getPluginManager().getPlugin("luckperms").orElse(null);
+        if (lpContainer != null) {
+            final String version = lpContainer.getVersion().orElse(null);
+            if (version != null) {
+                this.header.add("| LuckPerms Version | " + version);
+            }
+        }
         this.header.add("| User | " + (this.target == null ? "ALL" : this.target.getName()) + "|");
         this.header.add("| Record start | " + DATE_FORMAT.format(new Date(this.startTime)) + "|");
     }
 
-    public void addRecord(String flag, String source, String target, String location, String user, Tristate result) {
+    public void addRecord(String flag, String trust, String source, String target, String location, String user, Tristate result) {
         if (this.records.size() < MAX_LINES) {
-            this.records.add("| " + flag + " | " + source + " | " + target + " | " + location + " | " + user + " | " + result + " | ");
+            this.records.add("| " + flag + " | " + trust + " | " + source + " | " + target + " | " + location + " | " + user + " | " + result + " | ");
         } else {
             this.source.sendMessage(Text.of("MAX DEBUG LIMIT REACHED!", "\n",
                     TextColors.GREEN, "Pasting output..."));
             this.pasteRecords();
             this.records.clear();
+            GriefPreventionPlugin.debugActive = false;
+            this.source.sendMessage(Text.of(GP_TEXT, TextColors.GRAY, "Debug ", TextColors.RED, "OFF"));
         }
     }
 
@@ -133,8 +144,8 @@ public class GPDebugData {
         debugOutput.add("| Time elapsed | " + elapsed + " seconds" + "|");
         debugOutput.add("");
         debugOutput.add("### Output") ;
-        debugOutput.add("| Flag/Trust  | Source | Target | Location | User | Result |");
-        debugOutput.add("|-------|--------|--------|----------|------|--------|");
+        debugOutput.add("| Flag | Trust | Source | Target | Location | User | Result |");
+        debugOutput.add("|------|-------|--------|--------|----------|------|--------|");
 
         debugOutput.addAll(this.records);
 

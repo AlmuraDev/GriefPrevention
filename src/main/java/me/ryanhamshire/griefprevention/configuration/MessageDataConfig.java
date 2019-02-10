@@ -132,8 +132,8 @@ public class MessageDataConfig extends ConfigCategory {
     @Setting("claim-bank-withdraw-no-funds")
     public TextTemplate claimBankWithdrawNoFunds = TextTemplate.of(TextColors.RED, "The claim bank has a remaining balance of ", TextTemplate.arg("balance").color(TextColors.GOLD), " and does not have enough funds to withdraw ", TextTemplate.arg("amount").color(TextColors.GOLD), ".");
 
-    @Setting("claim-block-limit")
-    public TextTemplate claimBlockLimit = TextTemplate.of(TextColors.RED, "You've reached your claim block limit.  You can't purchase more.");
+    @Setting("claim-block-purchase-limit")
+    public TextTemplate claimBlockPurchaseLimit = TextTemplate.of(TextColors.RED, "The new claim block total of ", TextTemplate.arg("new_total").color(TextColors.GOLD), " will exceed your claim block limit of ", TextTemplate.arg("block_limit").color(TextColors.GREEN), ". The transaction has been cancelled.");
 
     @Setting("claim-chest-confirmation")
     public TextTemplate claimChestConfirmation = TextTemplate.of(TextColors.RED, "This chest is protected.");
@@ -728,6 +728,16 @@ public class MessageDataConfig extends ConfigCategory {
 
     @Setting(value = "spam-kick-message")
     public TextTemplate spamKickMessage = TextTemplate.of("Kicked for spam.");
+
+    @Setting("tax-claim-expired")
+    public TextTemplate taxClaimExpired = TextTemplate.of(TextColors.RED, "This claim has been frozen due to unpaid taxes. The current amount owed is '", TextTemplate.arg("tax_owed").color(TextColors.GOLD), "'." 
+            + "\nThere are '", TextTemplate.arg("remaining_days").color(TextColors.GREEN), "' days left to deposit payment to claim bank in order to unfreeze this claim.\nFailure to pay this debt will result in deletion of claim.\nNote: To deposit funds to claimbank, use /claimbank deposit <amount>.");
+
+    @Setting("tax-claim-paid-balance")
+    public TextTemplate taxClaimPaidBalance = TextTemplate.of(TextColors.GREEN, "The tax debt of '", TextTemplate.arg("amount").color(TextColors.GOLD), "' has been paid. Your claim has been unfrozen and is now available for use.");
+
+    @Setting("tax-claim-paid-partial")
+    public TextTemplate taxClaimPaidPartial = TextTemplate.of(TextColors.GREEN, "The tax debt of '", TextTemplate.arg("amount").color(TextColors.GOLD), "' has been partially paid. In order to unfreeze your claim, the remaining tax owed balance of '", TextTemplate.arg("balance").color(TextColors.GOLD), "' must be paid.");
 
     @Setting("town-create-not-enough-funds")
     public TextTemplate townCreateNotEnoughFunds = TextTemplate.of(TextColors.RED, "You do not have enough funds to create this town for ", TextTemplate.arg("create_cost").color(TextColors.GOLD), ". You currently have a balance of ", TextTemplate.arg("balance").color(TextColors.GOLD), " and need ", TextTemplate.arg("amount_needed").color(TextColors.GOLD), " more for creation.");

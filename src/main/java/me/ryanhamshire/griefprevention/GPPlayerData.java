@@ -26,6 +26,7 @@
 package me.ryanhamshire.griefprevention;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import me.ryanhamshire.griefprevention.api.claim.Claim;
 import me.ryanhamshire.griefprevention.api.claim.ClaimType;
 import me.ryanhamshire.griefprevention.api.data.PlayerData;
@@ -313,7 +314,7 @@ public class GPPlayerData implements PlayerData {
             this.ignoreBasicClaims = subject.hasPermission(activeContexts, GPPermissions.IGNORE_CLAIMS_BASIC);
             this.canManageAdminClaims = subject.hasPermission(activeContexts, GPPermissions.COMMAND_ADMIN_CLAIMS);
             this.canManageWilderness = subject.hasPermission(activeContexts, GPPermissions.MANAGE_WILDERNESS);
-            this.playerName = CommandHelper.lookupPlayerName(this.playerID);
+            this.playerName = subject.getFriendlyIdentifier().orElse(null);
             if (this.optionMaxClaimLevel > 255 || this.optionMaxClaimLevel <= 0 || this.optionMaxClaimLevel < this.optionMinClaimLevel) {
                 this.optionMaxClaimLevel = 255;
             }
@@ -327,7 +328,10 @@ public class GPPlayerData implements PlayerData {
 
     public String getPlayerName() {
         if (this.playerName == null) {
-            return "[unknown]";
+            this.playerName = CommandHelper.lookupPlayerName(this.playerID);
+            if (this.playerName == null) {
+                this.playerName = "[unknown]";
+            }
         }
 
         return this.playerName;
@@ -439,7 +443,7 @@ public class GPPlayerData implements PlayerData {
 
     public boolean addAccruedClaimBlocks(int newAccruedClaimBlocks) {
         int currentTotal = this.getAccruedClaimBlocks();
-        if ((currentTotal + newAccruedClaimBlocks) >= this.optionMaxAccruedBlocks) {
+        if ((currentTotal + newAccruedClaimBlocks) > this.optionMaxAccruedBlocks) {
             // player has exceeded limit, set nothing
             return false;
         }
@@ -449,7 +453,7 @@ public class GPPlayerData implements PlayerData {
     }
 
     public boolean setAccruedClaimBlocks(int newAccruedClaimBlocks) {
-        if (newAccruedClaimBlocks >= this.optionMaxAccruedBlocks) {
+        if (newAccruedClaimBlocks > this.optionMaxAccruedBlocks) {
             // player has exceeded limit, set nothing
             return false;
         }
@@ -751,6 +755,17 @@ public class GPPlayerData implements PlayerData {
         }
 
         return this.playerSubject.get();
+    }
+
+    public void sendTaxExpireMessage(Player player, GPClaim claim) {
+        final double taxRate = GPOptionHandler.getClaimOptionDouble(player, claim, GPOptions.Type.TAX_RATE, this);
+        final double taxOwed = claim.getClaimBlocks() * taxRate;
+        final double remainingDays = GPOptionHandler.getClaimOptionDouble(player, claim, GPOptions.Type.EXPIRATION_DAYS_KEEP, this);
+        final Text message = GriefPreventionPlugin.instance.messageData.taxClaimExpired
+                .apply(ImmutableMap.of(
+                "remaining_days", remainingDays,
+                "tax_owed", taxOwed)).build();
+        GriefPreventionPlugin.sendClaimDenyMessage(claim, player, message);
     }
 
     public double getTotalTax() {

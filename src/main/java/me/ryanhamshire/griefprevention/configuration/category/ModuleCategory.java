@@ -68,6 +68,7 @@ public class ModuleCategory {
         protection.put(ClaimFlag.ITEM_PICKUP.toString(), true);
         protection.put(ClaimFlag.ITEM_SPAWN.toString(), true);
         protection.put(ClaimFlag.ITEM_USE.toString(), true);
+        protection.put(ClaimFlag.LEAF_DECAY.toString(), true);
         protection.put(ClaimFlag.LIQUID_FLOW.toString(), true);
         protection.put(ClaimFlag.PORTAL_USE.toString(), true);
         protection.put(ClaimFlag.PROJECTILE_IMPACT_BLOCK.toString(), true);
@@ -77,6 +78,10 @@ public class ModuleCategory {
     public boolean isProtectionModuleEnabled(String flag) {
         final Boolean result = this.protection.get(flag);
         if (result == null) {
+            if (flag.equals(ClaimFlag.LEAF_DECAY.toString())) {
+                protection.put(ClaimFlag.LEAF_DECAY.toString(), true);
+                return true;
+            }
             return false;
         }
 

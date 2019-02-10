@@ -39,7 +39,6 @@ import me.ryanhamshire.griefprevention.api.claim.ClaimType;
 import me.ryanhamshire.griefprevention.api.claim.TrustType;
 import me.ryanhamshire.griefprevention.claim.GPClaim;
 import me.ryanhamshire.griefprevention.configuration.GriefPreventionConfig;
-import me.ryanhamshire.griefprevention.permission.GPBlacklists;
 import me.ryanhamshire.griefprevention.permission.GPPermissionHandler;
 import me.ryanhamshire.griefprevention.permission.GPPermissions;
 import me.ryanhamshire.griefprevention.util.BlockPosCache;
@@ -85,6 +84,7 @@ import org.spongepowered.api.world.DimensionTypes;
 import org.spongepowered.api.world.LocatableBlock;
 import org.spongepowered.api.world.Location;
 import org.spongepowered.api.world.World;
+import org.spongepowered.api.world.explosion.Explosion;
 import org.spongepowered.common.interfaces.world.IMixinLocation;
 
 import java.util.ArrayList;
@@ -108,6 +108,7 @@ public class BlockEventHandler {
 
     @Listener(order = Order.FIRST, beforeModifications = true)
     public void onBlockPre(ChangeBlockEvent.Pre event) {
+        lastBlockPreTick = Sponge.getServer().getRunningTimeTicks();
         if (GriefPreventionPlugin.isSourceIdBlacklisted("block-pre", event.getSource(), event.getLocations().get(0).getExtent().getProperties())) {
             return;
         }
@@ -141,6 +142,10 @@ public class BlockEventHandler {
         final boolean pistonExtend = context.containsKey(EventContextKeys.PISTON_EXTEND);
         final boolean isLiquidSource = context.containsKey(EventContextKeys.LIQUID_FLOW);
         final boolean isFireSource = isLiquidSource ? false : context.containsKey(EventContextKeys.FIRE_SPREAD);
+        final boolean isLeafDecay = context.containsKey(EventContextKeys.LEAVES_DECAY);
+        if (!GPFlags.LEAF_DECAY && isLeafDecay) {
+            return;
+        }
         if (!GPFlags.LIQUID_FLOW && isLiquidSource) {
             return;
         }
@@ -148,7 +153,6 @@ public class BlockEventHandler {
             return;
         }
 
-        lastBlockPreTick = Sponge.getServer().getRunningTimeTicks();
         lastBlockPreCancelled = false;
         final boolean isForgePlayerBreak = context.containsKey(EventContextKeys.PLAYER_BREAK);
         GPTimings.BLOCK_PRE_EVENT.startTimingIfSync();
@@ -218,7 +222,7 @@ public class BlockEventHandler {
                 if (user != null && targetClaim.isUserTrusted(user, TrustType.BUILDER)) {
                     continue;
                 }
-                if (sourceClaim.getOwnerUniqueId().equals(targetClaim.getOwnerUniqueId()) && user == null && sourceEntity == null) {
+                if (sourceClaim.getOwnerUniqueId().equals(targetClaim.getOwnerUniqueId()) && user == null && sourceEntity == null && !isFireSource && !isLeafDecay) {
                     continue;
                 }
                 if (user != null && pistonExtend) {
@@ -226,15 +230,19 @@ public class BlockEventHandler {
                         continue;
                     }
                 }
-                if (isFireSource) {
-                    if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.FIRE_SPREAD, source, location.getBlock(), user) == Tristate.FALSE) {
+                if (isLeafDecay) {
+                    if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.LEAF_DECAY, source, location.getBlock(), user) == Tristate.FALSE) {
                         event.setCancelled(true);
-                        lastBlockPreCancelled = true;
                         GPTimings.BLOCK_PRE_EVENT.stopTimingIfSync();
                         return;
                     }
-                }
-                if (isLiquidSource) {
+                } else if (isFireSource) {
+                    if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.FIRE_SPREAD, source, location.getBlock(), user) == Tristate.FALSE) {
+                        event.setCancelled(true);
+                        GPTimings.BLOCK_PRE_EVENT.stopTimingIfSync();
+                        return;
+                    }
+                } else if (isLiquidSource) {
                     if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.LIQUID_FLOW, source, location.getBlock(), user) == Tristate.FALSE) {
                         event.setCancelled(true);
                         lastBlockPreCancelled = true;
@@ -242,8 +250,7 @@ public class BlockEventHandler {
                         return;
                     }
                     continue;
-                }
-                if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.BLOCK_BREAK, source, location.getBlock(), user) == Tristate.FALSE) {
+                } else if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.BLOCK_BREAK, source, location.getBlock(), user) == Tristate.FALSE) {
                     // PRE events can be spammy so we need to avoid sending player messages here.
                     event.setCancelled(true);
                     lastBlockPreCancelled = true;
@@ -268,13 +275,10 @@ public class BlockEventHandler {
                 if (isFireSource) {
                     if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.FIRE_SPREAD, source, location.getBlock(), user) == Tristate.FALSE) {
                         event.setCancelled(true);
-                        lastBlockPreCancelled = true;
                         GPTimings.BLOCK_PRE_EVENT.stopTimingIfSync();
                         return;
                     }
-                }
-
-                if (isLiquidSource) {
+                } else if (isLiquidSource) {
                     if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.LIQUID_FLOW, source, location.getBlock(), user) == Tristate.FALSE) {
                         event.setCancelled(true);
                         lastBlockPreCancelled = true;
@@ -282,9 +286,7 @@ public class BlockEventHandler {
                         return;
                     }
                     continue;
-                }
-
-                if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.BLOCK_BREAK, source, location.getBlock(), user) == Tristate.FALSE) {
+                } else if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.BLOCK_BREAK, source, location.getBlock(), user) == Tristate.FALSE) {
                     event.setCancelled(true);
                     lastBlockPreCancelled = true;
                     GPTimings.BLOCK_PRE_EVENT.stopTimingIfSync();
@@ -535,13 +537,24 @@ public class BlockEventHandler {
     }
 
     @Listener(order = Order.FIRST, beforeModifications = true)
-    public void onExplosion(ExplosionEvent.Post event) {
+    public void onExplosionDetonate(ExplosionEvent.Detonate event) {
         final World world = event.getExplosion().getWorld();
         if (!GPFlags.EXPLOSION || !GriefPreventionPlugin.instance.claimsEnabledForWorld(world.getProperties())) {
             return;
         }
 
-        final Object source = event.getCause().root();
+        Object source = event.getSource();
+        if (source instanceof Explosion) {
+            final Explosion explosion = (Explosion) source;
+            if (explosion.getSourceExplosive().isPresent()) {
+                source = explosion.getSourceExplosive().get();
+            } else {
+                Entity exploder = event.getCause().first(Entity.class).orElse(null);
+                if (exploder != null) {
+                    source = exploder;
+                }
+            }
+        }
         if (GriefPreventionPlugin.isSourceIdBlacklisted(ClaimFlag.EXPLOSION.toString(), source, event.getExplosion().getWorld().getProperties())) {
             return;
         }
@@ -549,31 +562,30 @@ public class BlockEventHandler {
         GPTimings.EXPLOSION_EVENT.startTimingIfSync();
         final User user = CauseContextHelper.getEventUser(event);
         GPClaim targetClaim = null;
-        for (Transaction<BlockSnapshot> transaction : event.getTransactions()) {
-            BlockSnapshot blockSnapshot = transaction.getOriginal();
-            Location<World> location = blockSnapshot.getLocation().orElse(null);
-            if (location == null) {
-                continue;
+        final List<Location<World>> filteredLocations = new ArrayList<>();
+        for (Location<World> location : event.getAffectedLocations()) {
+            targetClaim =  GriefPreventionPlugin.instance.dataStore.getClaimAt(location, targetClaim);
+            Tristate result = Tristate.UNDEFINED;
+            if (GPFlags.EXPLOSION_SURFACE && location.getPosition().getY() > ((net.minecraft.world.World) world).getSeaLevel()) {
+                result = GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.EXPLOSION_SURFACE, source, location.getBlock(), user, true);
+            } else {
+                result = GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.EXPLOSION, source, location.getBlock(), user, true);
             }
 
-            targetClaim =  GriefPreventionPlugin.instance.dataStore.getClaimAt(blockSnapshot.getLocation().get(), targetClaim);
-            if (GPFlags.EXPLOSION_SURFACE && location.getPosition().getY() > ((net.minecraft.world.World) world).getSeaLevel() && GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.EXPLOSION_SURFACE, source, blockSnapshot, user, true) == Tristate.FALSE) {
-                event.setCancelled(true);
-                GPTimings.EXPLOSION_EVENT.stopTimingIfSync();
-                return;
-            }
-
-            if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.EXPLOSION, source, blockSnapshot, user, true) == Tristate.FALSE) {
+            if (result == Tristate.FALSE) {
                 // Avoid lagging server from large explosions.
-                if (event.getTransactions().size() > 100) {
+                if (event.getAffectedLocations().size() > 100) {
                     event.setCancelled(true);
-                    GPTimings.EXPLOSION_EVENT.stopTimingIfSync();
-                    return;
+                    break;
                 }
-                transaction.setValid(false);
-                GPTimings.EXPLOSION_EVENT.stopTimingIfSync();
-                return;
+                filteredLocations.add(location);
             }
+        }
+        // Workaround for SpongeForge bug
+        if (event.isCancelled()) {
+            event.getAffectedLocations().clear();
+        } else if (!filteredLocations.isEmpty()) {
+            event.getAffectedLocations().removeAll(filteredLocations);
         }
         GPTimings.EXPLOSION_EVENT.stopTimingIfSync();
     }
@@ -588,12 +600,17 @@ public class BlockEventHandler {
             return;
         }
 
+        Object source = event.getSource();
+        // Handled in Explosion listeners
+        if (source instanceof Explosion) {
+            return;
+        }
+
         final World world = event.getTransactions().get(0).getFinal().getLocation().get().getExtent();
         if (!GriefPreventionPlugin.instance.claimsEnabledForWorld(world.getProperties())) {
             return;
         }
 
-        final Object source = event.getSource();
         if (GriefPreventionPlugin.isSourceIdBlacklisted(ClaimFlag.BLOCK_BREAK.toString(), source, world.getProperties())) {
             return;
         }
