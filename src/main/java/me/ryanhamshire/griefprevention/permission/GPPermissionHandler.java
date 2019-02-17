@@ -514,14 +514,39 @@ public class GPPermissionHandler {
             }
             if (currentEvent instanceof NotifyNeighborBlockEvent) {
                 if (claim.getWorld().getProperties().getTotalTime() % 100 == 0L) {
-                    GriefPreventionPlugin.addEventLogEntry(currentEvent, claim, eventLocation, eventSubject, eventSourceId, eventTargetId, permissionSubject, permission, trust, permissionValue);
+                    GriefPreventionPlugin.addEventLogEntry(currentEvent, eventLocation, eventSourceId, eventTargetId, permissionSubject, permission, trust, permissionValue);
                 }
             } else {
-                GriefPreventionPlugin.addEventLogEntry(currentEvent, claim, eventLocation, eventSubject, eventSourceId, eventTargetId, permissionSubject, permission, trust, permissionValue);
+                GriefPreventionPlugin.addEventLogEntry(currentEvent, eventLocation, eventSourceId, eventTargetId, permissionSubject, permission, trust, permissionValue);
             }
         }
 
         return permissionValue;
+    }
+
+    // Used for situations where events are skipped for perf reasons
+    public static void addEventLogEntry(Event event, Location<World> location, Object source, Object target, Subject permissionSubject, String permission, String trust, Tristate result) {
+        if (GriefPreventionPlugin.debugActive) {
+            String sourceId = getPermissionIdentifier(source, true);
+            String targetPermission = permission;
+            String targetId = getPermissionIdentifier(target);
+            if (!targetId.isEmpty()) {
+                // move target meta to end of permission
+                Matcher m = PATTERN_META.matcher(targetId);
+                String targetMeta = "";
+                if (!permission.contains("command-execute")) {
+                    if (m.find()) {
+                        targetMeta = m.group(0);
+                        targetId = StringUtils.replace(targetId, targetMeta, "");
+                    }
+                }
+                targetPermission += "." + targetId + targetMeta;
+            }
+            if (permissionSubject == null) {
+                permissionSubject = GriefPreventionPlugin.GLOBAL_SUBJECT;
+            }
+            GriefPreventionPlugin.addEventLogEntry(event, location, sourceId, targetId, permissionSubject, targetPermission, trust, result);
+        }
     }
 
     public static String getPermissionIdentifier(Object obj) {
@@ -553,11 +578,11 @@ public class GPPermissionHandler {
 
                 if (mcEntity != null && id.contains("unknown") && SpongeImplHooks.isFakePlayer(mcEntity)) {
                     final String modId = SpongeImplHooks.getModIdFromClass(mcEntity.getClass());
-                    id = modId + ":fakeplayer." + EntityUtils.getFriendlyName(mcEntity).toLowerCase();
+                    id = modId + ":fakeplayer_" + EntityUtils.getFriendlyName(mcEntity).toLowerCase();
                 } else if (id.equals("unknown:unknown") && obj instanceof EntityPlayer) {
                     id = "minecraft:player";
                 }
-                populateEventSourceTarget(id, isSource);
+
                 if (mcEntity != null && targetEntity instanceof Living) {
                     String[] parts = id.split(":");
                     if (parts.length > 1) {
@@ -580,18 +605,15 @@ public class GPPermissionHandler {
 
                 if (targetEntity instanceof Item) {
                     id = ((Item) targetEntity).getItemType().getId();
-                    populateEventSourceTarget(id, isSource);
                 }
 
-                return id.toLowerCase();
+                return populateEventSourceTarget(id, isSource);
             } else if (obj instanceof EntityType) {
                 final String id = ((EntityType) obj).getId();
-                populateEventSourceTarget(id, isSource);
-                return ((EntityType) obj).getId();
+                return populateEventSourceTarget(id, isSource);
             } else if (obj instanceof BlockType) {
                 final String id = ((BlockType) obj).getId();
-                populateEventSourceTarget(id, isSource);
-                return id;
+                return populateEventSourceTarget(id, isSource);
             } else if (obj instanceof BlockSnapshot) {
                 final BlockSnapshot blockSnapshot = (BlockSnapshot) obj;
                 final BlockState blockstate = blockSnapshot.getState();
@@ -601,24 +623,20 @@ public class GPPermissionHandler {
                 } else {
                     id = blockstate.getType().getId();
                 }
-                populateEventSourceTarget(id, isSource);
-                return id.toLowerCase();
+                return populateEventSourceTarget(id, isSource);
             } else if (obj instanceof BlockState) {
                 final BlockState blockstate = (BlockState) obj;
                 final String id = blockstate.getType().getId() + "." + BlockUtils.getBlockStateMeta(blockstate);
-                populateEventSourceTarget(id, isSource);
-                return id.toLowerCase();
+                return populateEventSourceTarget(id, isSource);
             } else if (obj instanceof LocatableBlock) {
                 final LocatableBlock locatableBlock = (LocatableBlock) obj;
                 final BlockState blockstate = locatableBlock.getBlockState();
                 final String id = blockstate.getType().getId() + "." + BlockUtils.getBlockStateMeta(blockstate);
-                populateEventSourceTarget(id, isSource);
-                return id.toLowerCase();
+                return populateEventSourceTarget(id, isSource);
             } else if (obj instanceof TileEntity) {
                 TileEntity tileEntity = (TileEntity) obj;
                 final String id = tileEntity.getType().getId().toLowerCase();
-                populateEventSourceTarget(id, isSource);
-                return id;
+                return populateEventSourceTarget(id, isSource);
             } else if (obj instanceof ItemStack) {
                 final ItemStack itemstack = (ItemStack) obj;
                 String id = "";
@@ -631,8 +649,7 @@ public class GPPermissionHandler {
                     id = itemstack.getType().getId() + "." + ((net.minecraft.item.ItemStack)(Object) itemstack).getItemDamage();
                 }
 
-                populateEventSourceTarget(id, isSource);
-                return id.toLowerCase();
+                return populateEventSourceTarget(id, isSource);
             } else if (obj instanceof ItemType) {
                 final String id = ((ItemType) obj).getId().toLowerCase();
                 populateEventSourceTarget(id, isSource);
@@ -653,24 +670,19 @@ public class GPPermissionHandler {
                     id = "minecraft:" + id;
                 }
 
-                populateEventSourceTarget(id, isSource);
-                return id;
+                return populateEventSourceTarget(id, isSource);
             } else if (obj instanceof ItemStackSnapshot) {
                 final String id = ((ItemStackSnapshot) obj).getType().getId();
-                populateEventSourceTarget(id, isSource);
-                return id;
+                return populateEventSourceTarget(id, isSource);
             } else if (obj instanceof CatalogType) {
                 final String id = ((CatalogType) obj).getId();
-                populateEventSourceTarget(id, isSource);
-                return id;
+                return populateEventSourceTarget(id, isSource);
             } else if (obj instanceof String) {
                 final String id = obj.toString().toLowerCase();
-                populateEventSourceTarget(id, isSource);
-                return id;
+                return populateEventSourceTarget(id, isSource);
             } else if (obj instanceof PluginContainer) {
                 final String id = ((PluginContainer) obj).getId();
-                populateEventSourceTarget(id, isSource);
-                return id;
+                return populateEventSourceTarget(id, isSource);
             } else if (obj instanceof Inventory) {
                 return ((Inventory) obj).getArchetype().getId();
             }
@@ -750,11 +762,20 @@ public class GPPermissionHandler {
         return targetId;
     }
 
-    private static void populateEventSourceTarget(String id, boolean isSource) {
-        if (isSource) {
-            eventSourceId = id.toLowerCase();
-        } else {
-            eventTargetId = id.toLowerCase();
+    private static String populateEventSourceTarget(String id, boolean isSource) {
+        // Handle mod's that pass modid:modid:name
+        String[] parts = id.split(":");
+        if (parts != null && parts.length == 3) {
+            if (parts[0].equals(parts[1])) {
+                id = parts[1] + ":" + parts[2];
+            }
         }
+        id = id.toLowerCase();
+        if (isSource) {
+            eventSourceId = id;
+        } else {
+            eventTargetId = id;
+        }
+        return id;
     }
 }
