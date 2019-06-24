@@ -72,13 +72,23 @@ public class VisualizationApplicationTask implements Runnable {
             this.playerData.visualClaimId = this.visualization.getClaim().id;
             this.visualization.getClaim().playersWatching.add(this.player.getUniqueId());
         }
-        this.playerData.visualBlocks = new ArrayList<>(this.visualization.elements);
+        if (this.playerData.visualBlocks == null) {
+            this.playerData.visualBlocks = new ArrayList<>(this.visualization.elements);
+        } else {
+            this.playerData.visualBlocks.addAll(this.visualization.elements);
+        }
 
-        // schedule automatic visualization reversion in 60 seconds.
-        // only create revert task if not resizing/starting a claim
-        if (playerData.lastShovelLocation == null) {
+        if (this.playerData.visualRevertTask != null) {
+            this.playerData.visualRevertTask.cancel();
             this.playerData.visualRevertTask = Sponge.getGame().getScheduler().createTaskBuilder().async().delay(1, TimeUnit.MINUTES)
                     .execute(new VisualizationReversionTask(this.player, this.playerData)).submit(GriefPreventionPlugin.instance);
+        } else {
+            // schedule automatic visualization reversion in 60 seconds.
+            // only create revert task if not resizing/starting a claim
+            if (playerData.lastShovelLocation == null) {
+                this.playerData.visualRevertTask = Sponge.getGame().getScheduler().createTaskBuilder().async().delay(1, TimeUnit.MINUTES)
+                        .execute(new VisualizationReversionTask(this.player, this.playerData)).submit(GriefPreventionPlugin.instance);
+            }
         }
     }
 }

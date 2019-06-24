@@ -172,6 +172,7 @@ import org.spongepowered.api.event.Listener;
 import org.spongepowered.api.event.Order;
 import org.spongepowered.api.event.cause.EventContextKey;
 import org.spongepowered.api.event.cause.entity.damage.DamageType;
+import org.spongepowered.api.event.game.GameReloadEvent;
 import org.spongepowered.api.event.game.state.GameAboutToStartServerEvent;
 import org.spongepowered.api.event.game.state.GamePreInitializationEvent;
 import org.spongepowered.api.event.game.state.GameStartedServerEvent;
@@ -197,7 +198,7 @@ import org.spongepowered.api.world.Location;
 import org.spongepowered.api.world.World;
 import org.spongepowered.api.world.storage.WorldProperties;
 import org.spongepowered.common.SpongeImplHooks;
-import org.spongepowered.common.interfaces.world.IMixinDimensionType;
+import org.spongepowered.common.bridge.world.DimensionTypeBridge;
 import org.spongepowered.common.registry.RegistryHelper;
 
 import java.io.IOException;
@@ -406,7 +407,7 @@ public class GriefPreventionPlugin {
                 try {
                     SPONGE_VERSION = Sponge.getPlatform().getContainer(Component.IMPLEMENTATION).getVersion().get();
                     String build = SPONGE_VERSION.substring(Math.max(SPONGE_VERSION.length() - 4, 0));
-                    final int minSpongeBuild = 3529;
+                    final int minSpongeBuild = 3614;
                     final int spongeBuild = Integer.parseInt(build);
                     if (spongeBuild < minSpongeBuild) {
                         this.logger.error("Unable to initialize plugin. Detected SpongeForge build " + spongeBuild + " but GriefPrevention requires"
@@ -420,6 +421,14 @@ public class GriefPreventionPlugin {
         }
 
         return true;
+    }
+
+    @Listener(order = Order.LAST)
+    public void onGameReload(GameReloadEvent event) {
+        this.loadConfig();
+        if (event.getSource() instanceof CommandSource) {
+            sendMessage((CommandSource) event.getSource(), this.messageData.pluginReload.toText());
+        }
     }
 
     @Listener(order = Order.LAST)
@@ -879,10 +888,6 @@ public class GriefPreventionPlugin {
             GriefPreventionPlugin.getGlobalConfig().save();
         }
 
-        if (GriefPreventionPlugin.getGlobalConfig().getConfig().migrator.classicMigrator) {
-            GriefPreventionPlugin.getGlobalConfig().getConfig().migrator.classicMigrator = false;
-            GriefPreventionPlugin.getGlobalConfig().save();
-        }
         // unless claim block accrual is disabled, start the recurring per 10
         // minute event to give claim blocks to online players
         DeliverClaimBlocksTask task = new DeliverClaimBlocksTask(null);
@@ -1024,20 +1029,20 @@ public class GriefPreventionPlugin {
                 .description(Text.of("Deletes the claim you're standing in, even if it's not your claim"))
                 .permission(GPPermissions.COMMAND_DELETE_CLAIM_BASE)
                 .executor(new CommandClaimDelete(false))
-                .build(), "deleteclaim", "dc");
+                .build(), "deleteclaim");
 
         Sponge.getCommandManager().register(this, CommandSpec.builder()
                 .description(Text.of("Deletes the claim you're standing in, even if it's not your claim"))
                 .permission(GPPermissions.COMMAND_DELETE_CLAIM_BASE)
                 .executor(new CommandClaimDelete(true))
-                .build(), "deletetopclaim", "dtc");
+                .build(), "deletetopclaim");
 
         Sponge.getCommandManager().register(this, CommandSpec.builder()
                 .description(Text.of("Delete all of another player's claims"))
                 .permission(GPPermissions.COMMAND_DELETE_CLAIMS)
                 .arguments(user(Text.of("player")))
                 .executor(new CommandClaimDeleteAll())
-                .build(), "deleteallclaims", "dac");
+                .build(), "deleteallclaims");
 
         Sponge.getCommandManager().register(this, CommandSpec.builder()
                 .description(Text.of("Deletes all administrative claims"))
@@ -1775,7 +1780,7 @@ public class GriefPreventionPlugin {
             this.maxInspectionDistance = DataStore.globalConfig.getConfig().general.maxClaimInspectionDistance;
             for (World world : Sponge.getGame().getServer().getWorlds()) {
                 DimensionType dimType = world.getProperties().getDimensionType();
-                Path dimPath = rootConfigPath.resolve(((IMixinDimensionType) dimType).getModId()).resolve(((IMixinDimensionType) dimType).getEnumName());
+                Path dimPath = rootConfigPath.resolve(((DimensionTypeBridge) dimType).getModId()).resolve(((DimensionTypeBridge) dimType).getEnumName());
                 if (!Files.exists(dimPath.resolve(world.getProperties().getWorldName()))) {
                     try {
                         Files.createDirectories(rootConfigPath.resolve(dimType.getId()).resolve(world.getName()));

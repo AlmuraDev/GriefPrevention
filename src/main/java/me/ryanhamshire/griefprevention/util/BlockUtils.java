@@ -30,8 +30,10 @@ import com.google.common.collect.Maps;
 import it.unimi.dsi.fastutil.ints.Int2ObjectArrayMap;
 import me.ryanhamshire.griefprevention.GPPlayerData;
 import me.ryanhamshire.griefprevention.GriefPreventionPlugin;
+import me.ryanhamshire.griefprevention.api.claim.Claim;
 import me.ryanhamshire.griefprevention.api.claim.ClaimBlockSystem;
 import me.ryanhamshire.griefprevention.claim.GPClaim;
+import me.ryanhamshire.griefprevention.claim.GPClaimManager;
 import net.minecraft.block.Block;
 import net.minecraft.block.state.IBlockState;
 import net.minecraft.entity.Entity;
@@ -55,16 +57,24 @@ import org.spongepowered.api.util.blockray.BlockRayHit;
 import org.spongepowered.api.world.LocatableBlock;
 import org.spongepowered.api.world.Location;
 import org.spongepowered.api.world.World;
-import org.spongepowered.common.interfaces.IMixinChunk;
-import org.spongepowered.common.interfaces.world.gen.IMixinChunkProviderServer;
+import org.spongepowered.common.bridge.world.chunk.ChunkBridge;
+import org.spongepowered.common.bridge.world.chunk.ChunkProviderBridge;
 
 import java.io.IOException;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 public class BlockUtils {
 
-    public static final Direction[] CARDINAL_DIRECTIONS = new Direction[] {Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST};
+    public static final Direction[] CARDINAL_SET = {
+            Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST
+        };
+    public static final Direction[] ORDINAL_SET = {
+            Direction.NORTH, Direction.NORTHEAST, Direction.EAST, Direction.SOUTHEAST,
+            Direction.SOUTH, Direction.SOUTHWEST, Direction.WEST, Direction.NORTHWEST,
+        };
     private static final int NUM_XZ_BITS = 4;
     private static final int NUM_SHORT_Y_BITS = 8;
     private static final short XZ_MASK = 0xF;
@@ -253,18 +263,18 @@ public class BlockUtils {
         }
 
         chunkProviderServer.id2ChunkMap.remove(ChunkPos.asLong(chunk.x, chunk.z));
-        ((IMixinChunk) chunk).setScheduledForUnload(-1);
+        ((ChunkBridge) chunk).setScheduledForUnload(-1);
         org.spongepowered.api.world.Chunk spongeChunk = (org.spongepowered.api.world.Chunk) chunk;
-        for (Direction direction : CARDINAL_DIRECTIONS) {
+        for (Direction direction : CARDINAL_SET) {
             Vector3i neighborPosition = spongeChunk.getPosition().add(direction.asBlockOffset());
-            IMixinChunkProviderServer spongeChunkProvider = (IMixinChunkProviderServer) mcWorld.getChunkProvider();
-            net.minecraft.world.chunk.Chunk neighbor = spongeChunkProvider.getLoadedChunkWithoutMarkingActive
-                    (neighborPosition.getX(), neighborPosition.getZ());
+            ChunkProviderBridge spongeChunkProvider = (ChunkProviderBridge) mcWorld.getChunkProvider();
+            net.minecraft.world.chunk.Chunk neighbor = spongeChunkProvider.bridge$getLoadedChunkWithoutMarkingActive(neighborPosition.getX(),
+                neighborPosition.getZ());
             if (neighbor != null) {
                 int neighborIndex = directionToIndex(direction);
                 int oppositeNeighborIndex = directionToIndex(direction.getOpposite());
-                ((IMixinChunk) spongeChunk).setNeighborChunk(neighborIndex, null);
-                ((IMixinChunk) neighbor).setNeighborChunk(oppositeNeighborIndex, null);
+                ((ChunkBridge) spongeChunk).setNeighborChunk(neighborIndex, null);
+                ((ChunkBridge) neighbor).setNeighborChunk(oppositeNeighborIndex, null);
             }
         }
 
@@ -272,8 +282,8 @@ public class BlockUtils {
     }
 
     public static boolean createFillerChunk(GPPlayerData playerData, WorldServer world, int chunkX, int chunkZ) {
-        ChunkProviderServer chunkProviderServer = (ChunkProviderServer) world.getChunkProvider();
-        Chunk chunk = ((IMixinChunkProviderServer) chunkProviderServer).getLoadedChunkWithoutMarkingActive(chunkX, chunkZ);
+        ChunkProviderServer chunkProviderServer = world.getChunkProvider();
+        Chunk chunk = ((ChunkProviderBridge) chunkProviderServer).bridge$getLoadedChunkWithoutMarkingActive(chunkX, chunkZ);
         if (chunk == null) {
             return false;
         }
@@ -299,16 +309,16 @@ public class BlockUtils {
             world.getChunkProvider().id2ChunkMap.put(ChunkPos.asLong(chunk.x, chunk.z), chunk);
 
             org.spongepowered.api.world.Chunk spongeChunk = (org.spongepowered.api.world.Chunk) chunk;
-            for (Direction direction : CARDINAL_DIRECTIONS) {
+            for (Direction direction : CARDINAL_SET) {
                 Vector3i neighborPosition = spongeChunk.getPosition().add(direction.asBlockOffset());
-                IMixinChunkProviderServer spongeChunkProvider = (IMixinChunkProviderServer) world.getChunkProvider();
-                net.minecraft.world.chunk.Chunk neighbor = spongeChunkProvider.getLoadedChunkWithoutMarkingActive
-                        (neighborPosition.getX(), neighborPosition.getZ());
+                ChunkProviderBridge spongeChunkProvider = (ChunkProviderBridge) world.getChunkProvider();
+                net.minecraft.world.chunk.Chunk neighbor = spongeChunkProvider.bridge$getLoadedChunkWithoutMarkingActive(neighborPosition.getX(),
+                    neighborPosition.getZ());
                 if (neighbor != null) {
                     int neighborIndex = directionToIndex(direction);
                     int oppositeNeighborIndex = directionToIndex(direction.getOpposite());
-                    ((IMixinChunk) spongeChunk).setNeighborChunk(neighborIndex, neighbor);
-                    ((IMixinChunk) neighbor).setNeighborChunk(oppositeNeighborIndex, (net.minecraft.world.chunk.Chunk)(Object) chunk);
+                    ((ChunkBridge) spongeChunk).setNeighborChunk(neighborIndex, neighbor);
+                    ((ChunkBridge) neighbor).setNeighborChunk(oppositeNeighborIndex, (net.minecraft.world.chunk.Chunk)(Object) chunk);
                 }
             }
         }
@@ -334,8 +344,8 @@ public class BlockUtils {
         int x = chunk.x;
         int z = chunk.z;
         WorldServer world = (WorldServer) chunk.getWorld();
-        IMixinChunkProviderServer chunkProviderServer = (IMixinChunkProviderServer) world.getChunkProvider();
-        if (chunkProviderServer.getLoadedChunkWithoutMarkingActive(x, z) == null) {
+        ChunkProviderBridge chunkProviderServer = (ChunkProviderBridge) world.getChunkProvider();
+        if (chunkProviderServer.bridge$getLoadedChunkWithoutMarkingActive(x, z) == null) {
             return false;
         }
 
@@ -357,16 +367,15 @@ public class BlockUtils {
             world.getChunkProvider().id2ChunkMap.put(ChunkPos.asLong(chunk.x, chunk.z), chunk);
 
             org.spongepowered.api.world.Chunk spongeChunk = (org.spongepowered.api.world.Chunk) chunk;
-            for (Direction direction : CARDINAL_DIRECTIONS) {
+            for (Direction direction : CARDINAL_SET) {
                 Vector3i neighborPosition = spongeChunk.getPosition().add(direction.asBlockOffset());
-                IMixinChunkProviderServer spongeChunkProvider = (IMixinChunkProviderServer) world.getChunkProvider();
-                net.minecraft.world.chunk.Chunk neighbor = spongeChunkProvider.getLoadedChunkWithoutMarkingActive
-                        (neighborPosition.getX(), neighborPosition.getZ());
+                ChunkProviderBridge spongeChunkProvider = (ChunkProviderBridge) world.getChunkProvider();
+                net.minecraft.world.chunk.Chunk neighbor = spongeChunkProvider.bridge$getLoadedChunkWithoutMarkingActive(neighborPosition.getX(), neighborPosition.getZ());
                 if (neighbor != null) {
                     int neighborIndex = directionToIndex(direction);
                     int oppositeNeighborIndex = directionToIndex(direction.getOpposite());
-                    ((IMixinChunk) spongeChunk).setNeighborChunk(neighborIndex, neighbor);
-                    ((IMixinChunk) neighbor).setNeighborChunk(oppositeNeighborIndex, (net.minecraft.world.chunk.Chunk)(Object) chunk);
+                    ((ChunkBridge) spongeChunk).setNeighborChunk(neighborIndex, neighbor);
+                    ((ChunkBridge) neighbor).setNeighborChunk(oppositeNeighborIndex, (net.minecraft.world.chunk.Chunk)(Object) chunk);
                 }
             }
 
@@ -440,5 +449,41 @@ public class BlockUtils {
             }
         }
         return false;
+    }
+
+    public static Set<Claim> getNearbyClaims(Location<World> location) {
+        return getNearbyClaims(location, 50);
+    }
+
+    public static Set<Claim> getNearbyClaims(Location<World> location, int blockDistance) {
+        Set<Claim> claims = new HashSet<>();
+        GPClaimManager claimWorldManager = GriefPreventionPlugin.instance.dataStore.getClaimWorldManager(location.getExtent().getProperties());
+        if (claimWorldManager == null) {
+            return claims;
+        }
+
+        org.spongepowered.api.world.Chunk lesserChunk = location.getExtent().getChunkAtBlock(location.sub(blockDistance, 0, blockDistance).getBlockPosition()).orElse(null);
+        org.spongepowered.api.world.Chunk greaterChunk = location.getExtent().getChunkAtBlock(location.add(blockDistance, 0, blockDistance).getBlockPosition()).orElse(null);
+
+        if (lesserChunk != null && greaterChunk != null) {
+            for (int chunkX = lesserChunk.getPosition().getX(); chunkX <= greaterChunk.getPosition().getX(); chunkX++) {
+                for (int chunkZ = lesserChunk.getPosition().getZ(); chunkZ <= greaterChunk.getPosition().getZ(); chunkZ++) {
+                    org.spongepowered.api.world.Chunk chunk = location.getExtent().getChunk(chunkX, 0, chunkZ).orElse(null);
+                    if (chunk != null) {
+                        Set<Claim> claimsInChunk = claimWorldManager.getInternalChunksToClaimsMap().get(ChunkPos.asLong(chunkX, chunkZ));
+                        if (claimsInChunk != null) {
+                            for (Claim claim : claimsInChunk) {
+                                final GPClaim gpClaim = (GPClaim) claim;
+                                if (gpClaim.parent == null && !claims.contains(claim)) {
+                                    claims.add(claim);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return claims;
     }
 }

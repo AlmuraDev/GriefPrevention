@@ -33,8 +33,10 @@ import me.ryanhamshire.griefprevention.api.claim.Claim;
 import me.ryanhamshire.griefprevention.api.claim.ClaimType;
 import me.ryanhamshire.griefprevention.claim.GPClaimManager;
 import me.ryanhamshire.griefprevention.permission.GPPermissions;
+import me.ryanhamshire.griefprevention.util.BlockUtils;
 import me.ryanhamshire.griefprevention.util.PaginationUtils;
 import org.spongepowered.api.Sponge;
+import org.spongepowered.api.command.CommandException;
 import org.spongepowered.api.command.CommandResult;
 import org.spongepowered.api.command.CommandSource;
 import org.spongepowered.api.command.args.CommandContext;
@@ -51,7 +53,9 @@ import org.spongepowered.api.world.World;
 import org.spongepowered.api.world.storage.WorldProperties;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -75,14 +79,19 @@ public class CommandClaimList implements CommandExecutor {
 
     @Override
     public CommandResult execute(CommandSource src, CommandContext ctx) {
+        Player player;
+        try {
+            player = GriefPreventionPlugin.checkPlayer(src);
+        } catch (CommandException e) {
+            src.sendMessage(e.getText());
+            return CommandResult.success();
+        }
+
         List<User> userValues = new ArrayList<>(ctx.getAll("user"));
         WorldProperties worldProperties = ctx.<WorldProperties>getOne("world").orElse(null);
         User user = null;
         if (userValues.size() > 0) {
             user = userValues.get(0);
-        }
-        if (src instanceof Player) {
-            this.displayOwned = true;
         }
 
         if (user == null) {
@@ -102,6 +111,8 @@ public class CommandClaimList implements CommandExecutor {
             return CommandResult.success();
         }
 
+        // Always reset
+        this.displayOwned = true;
         String arguments = "";
         if (user != null) {
             arguments = user.getName();
@@ -114,27 +125,39 @@ public class CommandClaimList implements CommandExecutor {
 
         this.canListOthers = src.hasPermission(GPPermissions.LIST_OTHER_CLAIMS);
         this.canListAdmin = src.hasPermission(GPPermissions.LIST_OTHER_CLAIMS);
-        showClaimList(src, user, this.forcedType, worldProperties);
+        showClaimList(player, user, this.forcedType, worldProperties);
         return CommandResult.success();
     }
 
-    private void showClaimList(CommandSource src, User user, ClaimType type, WorldProperties worldProperties) {
+    private void showClaimList(Player src, User user, ClaimType type, WorldProperties worldProperties) {
         List<Text> claimsTextList = new ArrayList<>();
-        List<Claim> claims = new ArrayList<>();
+        Set<Claim> claims = new HashSet<>();
+        final GPPlayerData sourcePlayerData = GriefPreventionPlugin.instance.dataStore.getPlayerData(worldProperties, src.getUniqueId());
         for (World world : Sponge.getServer().getWorlds()) {
             if (!this.displayOwned && !world.getProperties().getUniqueId().equals(worldProperties.getUniqueId())) {
                 continue;
             }
+
             final GPClaimManager claimWorldManager = GriefPreventionPlugin.instance.dataStore.getClaimWorldManager(world.getProperties());
             // load the target player's data
             final GPPlayerData playerData = GriefPreventionPlugin.instance.dataStore.getOrCreatePlayerData(world, user.getUniqueId());
-            List<Claim> claimList = null;
+            Set<Claim> claimList = null;
+            int count = 0;
             if (this.displayOwned) {
-                claimList = playerData.getClaims();
+                claimList = playerData.getInternalClaims();
             } else {
-                claimList = claimWorldManager.getWorldClaims();
+                if (sourcePlayerData.optionRadiusClaimList <= 0) {
+                    claimList = claimWorldManager.getInternalWorldClaims();
+                } else {
+                    claimList = BlockUtils.getNearbyClaims(src.getLocation(), sourcePlayerData.optionRadiusClaimList);
+                }
             }
+            final int claimListMax = GriefPreventionPlugin.getActiveConfig(world.getProperties()).getConfig().claim.claimListMax;
             for (Claim claim : claimList) {
+                // Make sure not to show too many claims or client will time out
+                if (!this.displayOwned && claimListMax > 0 && count == claimListMax) {
+                    break;
+                }
                 if (claims.contains(claim)) {
                     continue;
                 }
@@ -142,13 +165,16 @@ public class CommandClaimList implements CommandExecutor {
                 if (user != null && this.displayOwned) {
                     if (user.getUniqueId().equals(claim.getOwnerUniqueId())) {
                         claims.add(claim);
+                        count++;
                     }
                 } else if (type != null) {
                     if (claim.getType() == type) {
                         claims.add(claim);
+                        count++;
                     }
                 } else {
                     claims.add(claim);
+                    count++;
                 }
             }
         }
@@ -217,7 +243,7 @@ public class CommandClaimList implements CommandExecutor {
         paginationList.sendTo(src, activePage);
     }
 
-    private Consumer<CommandSource> createClaimListConsumer(CommandSource src, User user, String type, WorldProperties worldProperties) {
+    private Consumer<CommandSource> createClaimListConsumer(Player src, User user, String type, WorldProperties worldProperties) {
         return consumer -> {
             if (type.equalsIgnoreCase("ALL")) {
                 this.displayOwned = false;
@@ -228,7 +254,7 @@ public class CommandClaimList implements CommandExecutor {
         };
     }
 
-    private Consumer<CommandSource> createClaimListConsumer(CommandSource src, User user, ClaimType type, WorldProperties worldProperties) {
+    private Consumer<CommandSource> createClaimListConsumer(Player src, User user, ClaimType type, WorldProperties worldProperties) {
         return consumer -> {
             this.displayOwned = false;
             showClaimList(src, user, type, worldProperties);

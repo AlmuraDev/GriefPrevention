@@ -51,7 +51,6 @@ import me.ryanhamshire.griefprevention.command.CommandHelper;
 import me.ryanhamshire.griefprevention.configuration.GriefPreventionConfig;
 import me.ryanhamshire.griefprevention.configuration.MessageStorage;
 import me.ryanhamshire.griefprevention.logging.CustomLogEntryTypes;
-import me.ryanhamshire.griefprevention.permission.GPOptions;
 import me.ryanhamshire.griefprevention.permission.GPPermissionHandler;
 import me.ryanhamshire.griefprevention.permission.GPPermissions;
 import me.ryanhamshire.griefprevention.provider.NucleusApiProvider;
@@ -69,6 +68,7 @@ import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.inventory.IInventory;
 import net.minecraft.item.ItemBlock;
 import net.minecraft.item.ItemFood;
+import net.minecraft.network.play.server.SPacketChunkData;
 import org.spongepowered.api.Sponge;
 import org.spongepowered.api.block.BlockSnapshot;
 import org.spongepowered.api.block.BlockType;
@@ -140,9 +140,11 @@ import org.spongepowered.api.world.World;
 import org.spongepowered.api.world.storage.WorldProperties;
 import org.spongepowered.common.SpongeImpl;
 import org.spongepowered.common.SpongeImplHooks;
+import org.spongepowered.common.bridge.OwnershipTrackedBridge;
 import org.spongepowered.common.data.util.NbtDataUtil;
 import org.spongepowered.common.entity.SpongeEntityType;
-import org.spongepowered.common.interfaces.entity.IMixinEntity;
+import org.spongepowered.common.bridge.entity.EntityBridge;
+import org.spongepowered.common.bridge.world.chunk.ActiveChunkReferantBridge;
 
 import java.lang.ref.WeakReference;
 import java.net.InetAddress;
@@ -169,7 +171,6 @@ public class PlayerEventHandler {
     private final BanService banService;
     private int lastInteractItemPrimaryTick = -1;
     private int lastInteractItemSecondaryTick = -1;
-    private boolean lastInteractItemCancelled = false;
 
     // list of temporarily banned ip's
     private ArrayList<IpBanInfo> tempBannedIps = new ArrayList<IpBanInfo>();
@@ -637,7 +638,7 @@ public class PlayerEventHandler {
         // if requires access trust, check for permission
         Location<World> location = player.getLocation();
         GPClaim claim = this.dataStore.getClaimAtPlayer(playerData, location);
-        if (playerData.canIgnoreClaim(claim)) {
+        if (playerData.canManageAdminClaims || playerData.canIgnoreClaim(claim)) {
             GPTimings.PLAYER_COMMAND_EVENT.stopTimingIfSync();
             return;
         }
@@ -1399,25 +1400,25 @@ public class PlayerEventHandler {
 
         // if entity is living and has an owner, apply special rules
         if (targetEntity instanceof Living) {
-            IMixinEntity spongeEntity = (IMixinEntity) targetEntity;
-            Optional<User> owner = spongeEntity.getTrackedPlayer(NbtDataUtil.SPONGE_ENTITY_CREATOR);
+            EntityBridge spongeEntity = (EntityBridge) targetEntity;
+            Optional<User> owner = ((OwnershipTrackedBridge) spongeEntity).tracked$getOwnerReference();
             if (owner.isPresent()) {
                 UUID ownerID = owner.get().getUniqueId();
                 // if the player interacting is the owner or an admin in ignore claims mode, always allow
                 if (player.getUniqueId().equals(ownerID) || playerData.canIgnoreClaim(claim)) {
                     // if giving away pet, do that instead
                     if (playerData.petGiveawayRecipient != null) {
-                        SpongeEntityType spongeEntityType = ((SpongeEntityType) spongeEntity.getType());
-                        if (spongeEntityType == null || spongeEntityType.equals(EntityTypes.UNKNOWN) || !spongeEntityType.getModId().equalsIgnoreCase("minecraft")) {
+                        SpongeEntityType spongeEntityType = (SpongeEntityType) ((Entity) spongeEntity).getType();
+                        if (spongeEntityType.equals(EntityTypes.UNKNOWN) || !spongeEntityType.getModId().equalsIgnoreCase("minecraft")) {
                             final Text message = GriefPreventionPlugin.instance.messageData.commandPetInvalid
                                     .apply(ImmutableMap.of(
-                                    "type", spongeEntity.getType().getId())).build();
+                                    "type", spongeEntityType.getId())).build();
                             GriefPreventionPlugin.sendMessage(player, message);
                             playerData.petGiveawayRecipient = null;
                             GPTimings.PLAYER_INTERACT_ENTITY_SECONDARY_EVENT.stopTimingIfSync();
                             return;
                         }
-                        spongeEntity.setCreator(playerData.petGiveawayRecipient.getUniqueId());
+                        ((Entity) spongeEntity).setCreator(playerData.petGiveawayRecipient.getUniqueId());
                         if (targetEntity instanceof EntityTameable) {
                             EntityTameable tameable = (EntityTameable) targetEntity;
                             tameable.setOwnerId(playerData.petGiveawayRecipient.getUniqueId());
@@ -1447,16 +1448,6 @@ public class PlayerEventHandler {
             result = GPPermissionHandler.getClaimPermission(event, location, claim, GPPermissions.INVENTORY_OPEN, source, targetEntity, player, TrustType.CONTAINER, false);
         }
         if (result == Tristate.FALSE) {
-            String entityId = targetEntity.getType() != null ? targetEntity.getType().getId() : ((net.minecraft.entity.Entity) targetEntity).getName();
-            Text message = null;
-            if (!(targetEntity instanceof Player)) {
-                message = GriefPreventionPlugin.instance.messageData.permissionInteractEntity
-                        .apply(ImmutableMap.of(
-                        "owner", claim.getOwnerName(),
-                        "entity", entityId)).build();
-                GriefPreventionPlugin.sendClaimDenyMessage(claim, player, message);
-            }
-
             event.setCancelled(true);
             this.sendInteractEntityDenyMessage(itemInHand, targetEntity, claim, player, handType);
             GPTimings.PLAYER_INTERACT_ENTITY_SECONDARY_EVENT.stopTimingIfSync();
@@ -1465,72 +1456,11 @@ public class PlayerEventHandler {
 
     @Listener(order = Order.FIRST, beforeModifications = true)
     public void onPlayerInteractItem(InteractItemEvent event, @Root Player player) {
-        if (event instanceof InteractItemEvent.Primary) {
-            lastInteractItemPrimaryTick = Sponge.getServer().getRunningTimeTicks();
-        } else {
-            lastInteractItemSecondaryTick = Sponge.getServer().getRunningTimeTicks();
-        }
-
         final World world = player.getWorld();
-        final ItemType playerItem = event.getItemStack().getType();
         final HandInteractEvent handEvent = (HandInteractEvent) event;
         final ItemStack itemInHand = player.getItemInHand(handEvent.getHandType()).orElse(ItemStack.empty());
 
-        if (itemInHand.isEmpty() || playerItem instanceof ItemFood) {
-            return;
-        }
-
-        if ((!GPFlags.INTERACT_ITEM_PRIMARY && !GPFlags.INTERACT_ITEM_SECONDARY) || !GriefPreventionPlugin.instance.claimsEnabledForWorld(world.getProperties())) {
-            return;
-        }
-
-        final boolean itemPrimaryBlacklisted = GriefPreventionPlugin.isTargetIdBlacklisted(ClaimFlag.INTERACT_ITEM_PRIMARY.toString(), playerItem, player.getWorld().getProperties());
-        final boolean itemSecondaryBlacklisted = GriefPreventionPlugin.isTargetIdBlacklisted(ClaimFlag.INTERACT_ITEM_SECONDARY.toString(), playerItem, player.getWorld().getProperties());
-        if (itemPrimaryBlacklisted && itemSecondaryBlacklisted) {
-            return;
-        }
-
-        final boolean primaryEvent = event instanceof InteractItemEvent.Primary ? true : false;
-        final Cause cause = event.getCause();
-        final EventContext context = cause.getContext();
-        final BlockSnapshot blockSnapshot = context.get(EventContextKeys.BLOCK_HIT).orElse(BlockSnapshot.NONE);
-        final Vector3d interactPoint = event.getInteractionPoint().orElse(null);
-        final Entity entity = context.get(EventContextKeys.ENTITY_HIT).orElse(null);
-        final Location<World> location = entity != null ? entity.getLocation() 
-                : blockSnapshot != BlockSnapshot.NONE ? blockSnapshot.getLocation().get() 
-                        : interactPoint != null ? new Location<World>(world, interactPoint) 
-                                : player.getLocation();
-        final GPClaim claim = this.dataStore.getClaimAt(location);
-
-        final String ITEM_PERMISSION = primaryEvent ? GPPermissions.INTERACT_ITEM_PRIMARY : GPPermissions.INTERACT_ITEM_SECONDARY;
-        if ((itemPrimaryBlacklisted && ITEM_PERMISSION.equals(GPPermissions.INTERACT_ITEM_PRIMARY)) || (itemSecondaryBlacklisted && ITEM_PERMISSION.equals(GPPermissions.INTERACT_ITEM_SECONDARY))) {
-            return;
-        }
-
-        if (!primaryEvent) {
-            if (!itemInHand.isEmpty() && (itemInHand.getType().equals(GriefPreventionPlugin.instance.modificationTool) ||
-                    itemInHand.getType().equals(GriefPreventionPlugin.instance.investigationTool))) {
-                GPPermissionHandler.addEventLogEntry(event, location, itemInHand, blockSnapshot == null ? entity : blockSnapshot, player, ITEM_PERMISSION, null, Tristate.TRUE);
-                if (investigateClaim(event, player, BlockSnapshot.NONE, itemInHand)) {
-                    return;
-                }
-
-                final GPPlayerData playerData = this.dataStore.getOrCreatePlayerData(player.getWorld(), player.getUniqueId());
-                onPlayerHandleShovelAction(event, BlockSnapshot.NONE, player,  ((HandInteractEvent) event).getHandType(), playerData);
-                return;
-            }
-        }
-
-        if (GPPermissionHandler.getClaimPermission(event, location, claim, ITEM_PERMISSION, player, playerItem, player, TrustType.ACCESSOR, true) == Tristate.FALSE) {
-            Text message = GriefPreventionPlugin.instance.messageData.permissionInteractItem
-                    .apply(ImmutableMap.of(
-                    "owner", claim.getOwnerName(),
-                    "item", itemInHand.getType().getId())).build();
-            GriefPreventionPlugin.sendClaimDenyMessage(claim, player, message);
-            event.setCancelled(true);
-            lastInteractItemCancelled = true;
-            return;
-        }
+        handleItemInteract(event, player, world, itemInHand);
     }
 
     // when a player picks up an item...
@@ -1548,7 +1478,7 @@ public class PlayerEventHandler {
         GPPlayerData playerData = this.dataStore.getOrCreatePlayerData(world, player.getUniqueId());
         Location<World> location = player.getLocation();
         GPClaim claim = this.dataStore.getClaimAtPlayer(playerData, location);
-        if (GPPermissionHandler.getClaimPermission(event, location, claim, GPPermissions.ITEM_PICKUP, player, event.getTargetEntity(), player, true) == Tristate.FALSE) {
+        if (GPPermissionHandler.getClaimPermission(event, location, claim, GPPermissions.ITEM_PICKUP, player, event.getTargetEntity(), player, TrustType.ACCESSOR, true) == Tristate.FALSE) {
             event.setCancelled(true);
             GPTimings.PLAYER_PICKUP_ITEM_EVENT.stopTimingIfSync();
             return;
@@ -1668,6 +1598,14 @@ public class PlayerEventHandler {
 
     @Listener(order = Order.FIRST, beforeModifications = true)
     public void onPlayerInteractBlockPrimary(InteractBlockEvent.Primary.MainHand event, @First Player player) {
+        final BlockSnapshot clickedBlock = event.getTargetBlock();
+        final HandType handType = event.getHandType();
+        final ItemStack itemInHand = player.getItemInHand(handType).orElse(ItemStack.empty());
+        // Run our item hook since Sponge no longer fires InteractItemEvent when targetting a non-air block
+        if (clickedBlock != BlockSnapshot.NONE && handleItemInteract(event, player, player.getWorld(), itemInHand).isCancelled()) {
+            return;
+        }
+
         if (!GPFlags.INTERACT_BLOCK_PRIMARY || !GriefPreventionPlugin.instance.claimsEnabledForWorld(player.getWorld().getProperties())) {
             return;
         }
@@ -1676,10 +1614,7 @@ public class PlayerEventHandler {
         }
 
         GPTimings.PLAYER_INTERACT_BLOCK_PRIMARY_EVENT.startTimingIfSync();
-        final BlockSnapshot clickedBlock = event.getTargetBlock();
         final Location<World> location = clickedBlock.getLocation().orElse(null);
-        final HandType handType = event.getHandType();
-        final ItemStack itemInHand = player.getItemInHand(handType).orElse(ItemStack.empty());
         final Object source = !itemInHand.isEmpty() ? itemInHand : player;
         if (location == null) {
             GPTimings.PLAYER_INTERACT_BLOCK_PRIMARY_EVENT.stopTimingIfSync();
@@ -1701,10 +1636,8 @@ public class PlayerEventHandler {
             }
 
             // Don't send a deny message if the player is holding an investigation tool
-            if (Sponge.getServer().getRunningTimeTicks() != lastInteractItemPrimaryTick || lastInteractItemCancelled != true) {
-                if (!PlayerUtils.hasItemInOneHand(player, GriefPreventionPlugin.instance.investigationTool)) {
-                    this.sendInteractBlockDenyMessage(itemInHand, clickedBlock, claim, player, playerData, handType);
-                }
+            if (!PlayerUtils.hasItemInOneHand(player, GriefPreventionPlugin.instance.investigationTool)) {
+                this.sendInteractBlockDenyMessage(itemInHand, clickedBlock, claim, player, playerData, handType);
             }
             event.setCancelled(true);
             GPTimings.PLAYER_INTERACT_BLOCK_PRIMARY_EVENT.stopTimingIfSync();
@@ -1716,6 +1649,15 @@ public class PlayerEventHandler {
 
     @Listener(order = Order.FIRST, beforeModifications = true)
     public void onPlayerInteractBlockSecondary(InteractBlockEvent.Secondary event, @First Player player) {
+        final BlockSnapshot clickedBlock = event.getTargetBlock();
+        // Run our item hook since Sponge no longer fires InteractItemEvent when targetting a non-air block
+        final HandType handType = event.getHandType();
+        final ItemStack itemInHand = player.getItemInHand(handType).orElse(ItemStack.empty());
+        if (handleItemInteract(event, player, player.getWorld(), itemInHand).isCancelled()) {
+            event.setCancelled(true);
+            return;
+        }
+
         if (!GriefPreventionPlugin.instance.claimsEnabledForWorld(player.getWorld().getProperties())) {
             return;
         }
@@ -1724,9 +1666,6 @@ public class PlayerEventHandler {
         }
 
         GPTimings.PLAYER_INTERACT_BLOCK_SECONDARY_EVENT.startTimingIfSync();
-        final BlockSnapshot clickedBlock = event.getTargetBlock();
-        final HandType handType = event.getHandType();
-        final ItemStack itemInHand = player.getItemInHand(handType).orElse(ItemStack.empty());
         final Object source = !itemInHand.isEmpty() ? itemInHand : player;
 
         // Check if item is banned
@@ -1741,7 +1680,7 @@ public class PlayerEventHandler {
         if (!itemInHand.isEmpty() && (itemInHand.getType().equals(GriefPreventionPlugin.instance.modificationTool))) {
             onPlayerHandleShovelAction(event, event.getTargetBlock(), player, handType, playerData);
             // avoid changing blocks after using a shovel
-            event.setUseBlockResult(Tristate.FALSE);
+            event.setCancelled(true);
             GPTimings.PLAYER_INTERACT_BLOCK_SECONDARY_EVENT.stopTimingIfSync();
             return;
         }
@@ -1765,15 +1704,30 @@ public class PlayerEventHandler {
                     }
                 }
                 // Don't send a deny message if the player is holding an investigation tool
-                if (Sponge.getServer().getRunningTimeTicks() != lastInteractItemSecondaryTick || lastInteractItemCancelled != true) {
-                    if (!PlayerUtils.hasItemInOneHand(player, GriefPreventionPlugin.instance.investigationTool)) {
-                        this.sendInteractBlockDenyMessage(itemInHand, clickedBlock, claim, player, playerData, handType);
-                    }
+                if (!PlayerUtils.hasItemInOneHand(player, GriefPreventionPlugin.instance.investigationTool)) {
+                    this.sendInteractBlockDenyMessage(itemInHand, clickedBlock, claim, player, playerData, handType);
                 }
-                if (handType == HandTypes.MAIN_HAND) {
+                if (!SpongeImplHooks.isFakePlayer(((EntityPlayerMP) player)) && handType == HandTypes.MAIN_HAND) {
                     ((EntityPlayerMP) player).closeScreen();
                 }
-                event.setUseBlockResult(Tristate.FALSE);
+
+                // Special case for vanilla flower pots to fix client visual glitch
+                // TODO - Fix in Forge so we can remove this hack
+                if (clickedBlock.getState().getType() == BlockTypes.FLOWER_POT) {
+                    final EntityPlayerMP mcPlayer = (EntityPlayerMP) player;
+                    mcPlayer.sendContainerToPlayer(mcPlayer.inventoryContainer);
+                    if (tileEntity != null) {
+                        mcPlayer.connection.sendPacket(((net.minecraft.tileentity.TileEntity) tileEntity).getUpdatePacket());
+                        mcPlayer.connection.sendPacket(new SPacketChunkData(((net.minecraft.world.chunk.Chunk) ((ActiveChunkReferantBridge) player).bridge$getActiveChunk()),
+                            1));
+                    }
+                }
+                // Always cancel if using a mod item in hand due to dupes etc.
+                if (!itemInHand.isEmpty() && !itemInHand.getType().getId().startsWith("minecraft")) {
+                    event.setCancelled(true);
+                } else {
+                    event.setUseBlockResult(Tristate.FALSE);
+                }
                 GPTimings.PLAYER_INTERACT_BLOCK_SECONDARY_EVENT.stopTimingIfSync();
                 return;
             }
@@ -1784,10 +1738,14 @@ public class PlayerEventHandler {
             // block container use during pvp combat, same reason
             if (playerData.inPvpCombat(player.getWorld())) {
                 GriefPreventionPlugin.sendMessage(player, GriefPreventionPlugin.instance.messageData.pvpNoContainers.toText());
-                if (handType == HandTypes.MAIN_HAND) {
+                if (!SpongeImplHooks.isFakePlayer(((EntityPlayerMP) player)) && handType == HandTypes.MAIN_HAND) {
                     ((EntityPlayerMP) player).closeScreen();
                 }
-                event.setUseBlockResult(Tristate.FALSE);
+                if (!itemInHand.isEmpty() && !itemInHand.getType().getId().startsWith("minecraft")) {
+                    event.setCancelled(true);
+                } else {
+                    event.setUseBlockResult(Tristate.FALSE);
+                }
                 this.sendInteractBlockDenyMessage(itemInHand, clickedBlock, claim, player, playerData, handType);
                 GPTimings.PLAYER_INTERACT_BLOCK_SECONDARY_EVENT.stopTimingIfSync();
                 return;
@@ -1799,15 +1757,78 @@ public class PlayerEventHandler {
                 GriefPreventionPlugin.sendMessage(player, GriefPreventionPlugin.instance.messageData.pvpImmunityEnd.toText());
             }
         }
-        // otherwise handle right click (shovel, string, bonemeal)
-        else if (!itemInHand.isEmpty() && (itemInHand.getType() == GriefPreventionPlugin.instance.modificationTool)) {
-            onPlayerHandleShovelAction(event, event.getTargetBlock(), player, handType, playerData);
-            // avoid changing blocks after using a shovel
-            event.setUseBlockResult(Tristate.FALSE);
-            this.sendInteractBlockDenyMessage(itemInHand, clickedBlock, claim, player, playerData, handType);
-        }
+
         playerData.setLastInteractData(claim);
         GPTimings.PLAYER_INTERACT_BLOCK_SECONDARY_EVENT.stopTimingIfSync();
+    }
+
+    public InteractEvent handleItemInteract(InteractEvent event, Player player, World world, ItemStack itemInHand) {
+        if (lastInteractItemSecondaryTick == Sponge.getServer().getRunningTimeTicks() || lastInteractItemPrimaryTick == Sponge.getServer().getRunningTimeTicks()) {
+            // ignore
+            return event;
+        }
+
+        if (event instanceof InteractItemEvent.Primary) {
+            lastInteractItemPrimaryTick = Sponge.getServer().getRunningTimeTicks();
+        } else {
+            lastInteractItemSecondaryTick = Sponge.getServer().getRunningTimeTicks();
+        }
+
+        final ItemType itemType = itemInHand.getType();
+        if (itemInHand.isEmpty() || itemType instanceof ItemFood) {
+            return event;
+        }
+
+        final boolean primaryEvent = event instanceof InteractItemEvent.Primary || event instanceof InteractBlockEvent.Primary;
+        if (!GPFlags.INTERACT_ITEM_PRIMARY && primaryEvent || !GPFlags.INTERACT_ITEM_SECONDARY && !primaryEvent || !GriefPreventionPlugin.instance.claimsEnabledForWorld(world.getProperties())) {
+            return event;
+        }
+
+        if (primaryEvent && GriefPreventionPlugin.isTargetIdBlacklisted(ClaimFlag.INTERACT_ITEM_PRIMARY.toString(), itemInHand.getType(), world.getProperties())) {
+            return event;
+        }
+        if (!primaryEvent && GriefPreventionPlugin.isTargetIdBlacklisted(ClaimFlag.INTERACT_ITEM_SECONDARY.toString(), itemInHand.getType(), world.getProperties())) {
+            return event;
+        }
+
+        final Cause cause = event.getCause();
+        final EventContext context = cause.getContext();
+        final BlockSnapshot blockSnapshot = context.get(EventContextKeys.BLOCK_HIT).orElse(BlockSnapshot.NONE);
+        final Vector3d interactPoint = event.getInteractionPoint().orElse(null);
+        final Entity entity = context.get(EventContextKeys.ENTITY_HIT).orElse(null);
+        final Location<World> location = entity != null ? entity.getLocation() 
+                : blockSnapshot != BlockSnapshot.NONE ? blockSnapshot.getLocation().get() 
+                        : interactPoint != null ? new Location<World>(world, interactPoint) 
+                                : player.getLocation();
+
+        final String ITEM_PERMISSION = primaryEvent ? GPPermissions.INTERACT_ITEM_PRIMARY : GPPermissions.INTERACT_ITEM_SECONDARY;
+        final GPPlayerData playerData = this.dataStore.getOrCreatePlayerData(player.getWorld(), player.getUniqueId());
+        if (!itemInHand.isEmpty() && (itemInHand.getType().equals(GriefPreventionPlugin.instance.modificationTool) ||
+                itemInHand.getType().equals(GriefPreventionPlugin.instance.investigationTool))) {
+            GPPermissionHandler.addEventLogEntry(event, location, itemInHand, blockSnapshot == null ? entity : blockSnapshot, player, ITEM_PERMISSION, null, Tristate.TRUE);
+            if (investigateClaim(event, player, blockSnapshot, itemInHand)) {
+                return event;
+            }
+
+            onPlayerHandleShovelAction(event, blockSnapshot, player,  ((HandInteractEvent) event).getHandType(), playerData);
+            return event;
+        }
+
+        final GPClaim claim = this.dataStore.getClaimAtPlayer(location, playerData, true);
+        if (GPPermissionHandler.getClaimPermission(event, location, claim, ITEM_PERMISSION, player, itemType, player, TrustType.ACCESSOR, true) == Tristate.FALSE) {
+            Text message = GriefPreventionPlugin.instance.messageData.permissionInteractItem
+                    .apply(ImmutableMap.of(
+                    "owner", claim.getOwnerName(),
+                    "item", itemInHand.getType().getId())).build();
+            GriefPreventionPlugin.sendClaimDenyMessage(claim, player, message);
+            if (event instanceof InteractItemEvent) {
+                if (!SpongeImplHooks.isFakePlayer(((EntityPlayerMP) player)) && itemType == ItemTypes.WRITABLE_BOOK) {
+                    ((EntityPlayerMP) player).closeScreen();
+                }
+            }
+            event.setCancelled(true);
+        }
+        return event;
     }
 
     private void onPlayerHandleShovelAction(InteractEvent event, BlockSnapshot targetBlock, Player player, HandType handType, GPPlayerData playerData) {
@@ -1854,6 +1875,7 @@ public class PlayerEventHandler {
         // if the player is in restore nature mode, do only that
         UUID playerID = player.getUniqueId();
         playerData = this.dataStore.getOrCreatePlayerData(player.getWorld(), player.getUniqueId());
+        final ClaimType shovelClaimType = PlayerUtils.getClaimTypeFromShovel(playerData.shovelMode);
         if (playerData.shovelMode == ShovelMode.RestoreNature || playerData.shovelMode == ShovelMode.RestoreNatureAggressive) {
             if (true) {
                 player.sendMessage(Text.of(TextColors.RED, "This mode is currently disabled until further notice."));
@@ -1862,7 +1884,7 @@ public class PlayerEventHandler {
             }
 
             // if the clicked block is in a claim, visualize that claim and deliver an error message
-            final GPClaim claim = this.dataStore.getClaimAt(location);
+            final GPClaim claim = this.dataStore.getClaimAtPlayer(location, playerData, true);
             if (!claim.isWilderness()) {
                 final Text message = GriefPreventionPlugin.instance.messageData.blockClaimed
                         .apply(ImmutableMap.of(
@@ -1945,7 +1967,7 @@ public class PlayerEventHandler {
                     else if (location.getBlock().getType() == BlockTypes.FLOWING_WATER || location.getBlock().getType() == BlockTypes.WATER) {
                         BlockType newBlockType = location.getBlock().getType();
                         while (newBlockType != BlockTypes.FLOWING_WATER && newBlockType != BlockTypes.WATER) {
-                            newBlockType = location.getRelative(Direction.DOWN).getBlockType();
+                            newBlockType = location.getBlockRelative(Direction.DOWN).getBlockType();
                         }
                         if (allowedFillBlocks.contains(newBlockType)) {
                             defaultFiller = newBlockType;
@@ -1967,10 +1989,10 @@ public class PlayerEventHandler {
 
                             // otherwise look to neighbors for an appropriate fill block
                             else {
-                                Location<World> eastBlock = block.getLocation().get().getRelative(Direction.EAST);
-                                Location<World> westBlock = block.getLocation().get().getRelative(Direction.WEST);
-                                Location<World> northBlock = block.getLocation().get().getRelative(Direction.NORTH);
-                                Location<World> southBlock = block.getLocation().get().getRelative(Direction.SOUTH);
+                                Location<World> eastBlock = block.getLocation().get().getBlockRelative(Direction.EAST);
+                                Location<World> westBlock = block.getLocation().get().getBlockRelative(Direction.WEST);
+                                Location<World> northBlock = block.getLocation().get().getBlockRelative(Direction.NORTH);
+                                Location<World> southBlock = block.getLocation().get().getBlockRelative(Direction.SOUTH);
 
                                 // first, check lateral neighbors (ideally, want to keep natural layers)
                                 if (allowedFillBlocks.contains(eastBlock.getBlockType())) {
@@ -2054,8 +2076,8 @@ public class PlayerEventHandler {
             if (oldClaim.parent == null) {
                 // temporary claim instance, just for checking contains()
                 GPClaim newClaim = new GPClaim(
-                            new Location<World>(oldClaim.getLesserBoundaryCorner().getExtent(), smallX, smallY, smallZ),
-                            new Location<World>(oldClaim.getLesserBoundaryCorner().getExtent(), bigX, bigY, bigZ), ClaimType.BASIC, oldClaim.isCuboid());
+                            new Location<World>(player.getWorld(), smallX, smallY, smallZ),
+                            new Location<World>(player.getWorld(), bigX, bigY, bigZ), ClaimType.BASIC, oldClaim.isCuboid());
                 // if the new claim is smaller
                 if (!newClaim.contains(oldClaim.getLesserBoundaryCorner())
                         || !newClaim.contains(oldClaim.getGreaterBoundaryCorner())) {
@@ -2140,9 +2162,9 @@ public class PlayerEventHandler {
                     if (claimResult.getResultType() == ClaimResultType.OVERLAPPING_CLAIM) {
                         GPClaim overlapClaim = (GPClaim) claimResult.getClaim().get();
                         GriefPreventionPlugin.sendMessage(player, GriefPreventionPlugin.instance.messageData.claimResizeOverlap.toText());
-                        List<Claim> claims = new ArrayList<>();
+                        Set<Claim> claims = new HashSet<>();
                         claims.add(overlapClaim);
-                        CommandHelper.showClaims(player, claims, location.getBlockY(), true);
+                        CommandHelper.showOverlapClaims(player, claims, location.getBlockY());
                     } else {
                         if (!claimResult.getMessage().isPresent()) {
                             GriefPreventionPlugin.sendMessage(player, GriefPreventionPlugin.instance.messageData.claimNotYours.toText());
@@ -2160,7 +2182,7 @@ public class PlayerEventHandler {
         // otherwise, since not currently resizing a claim, must be starting
         // a resize, creating a new claim, town, or creating a subdivision
 
-        GPClaim claim = this.dataStore.getClaimAt(location);
+        GPClaim claim = this.dataStore.getClaimAtPlayer(location, playerData, true);
         // if within an existing claim, he's not creating a new one
         if (!claim.isWilderness()) {
             // if the player has permission to edit the claim or subdivision
@@ -2229,7 +2251,7 @@ public class PlayerEventHandler {
                         || ((claim.isTown() || claim.isAdminClaim()) && (playerData.lastShovelLocation == null || playerData.claimSubdividing != null)) && playerData.shovelMode != ShovelMode.Town)) {
                     if (claim.getTownClaim() != null && playerData.shovelMode == ShovelMode.Town) {
                         GriefPreventionPlugin.sendMessage(player, GriefPreventionPlugin.instance.messageData.claimCreateOverlapShort.toText());
-                        List<Claim> claims = new ArrayList<>();
+                        Set<Claim> claims = new HashSet<>();
                         claims.add(claim);
                         CommandHelper.showClaims(player, claims, location.getBlockY(), true);
                         GPTimings.PLAYER_HANDLE_SHOVEL_ACTION.stopTimingIfSync();
@@ -2254,6 +2276,17 @@ public class PlayerEventHandler {
                             return;
                         }
 
+                        if (!player.hasPermission(GPPermissions.OVERRIDE_CLAIM_LIMIT)) {
+                            if (playerData.optionCreateClaimLimitSubdivision > 0 && (playerData.getClaimTypeCount(shovelClaimType) + 1) > playerData.optionCreateClaimLimitSubdivision) {
+                                final Text message = GriefPreventionPlugin.instance.messageData.claimCreateFailedLimit
+                                        .apply(ImmutableMap.of(
+                                        "limit", playerData.optionCreateClaimLimitSubdivision,
+                                        "type", shovelClaimType.name())).build();
+                                GriefPreventionPlugin.sendMessage(player, message);
+                                GPTimings.PLAYER_HANDLE_SHOVEL_ACTION.stopTimingIfSync();
+                                return;
+                            }
+                        }
                         // if the clicked claim was a subdivision, tell him
                         // he can't start a new subdivision here
                         if (claim.isSubdivision()) {
@@ -2279,12 +2312,12 @@ public class PlayerEventHandler {
                     // subdivision by setting the other boundary corner
                     else if (playerData.claimSubdividing != null) {
                         // Validate second clicked corner is within claim being sub divided
-                        final GPClaim clickedClaim = GriefPreventionPlugin.instance.dataStore.getClaimAt(location);
+                        final GPClaim clickedClaim = GriefPreventionPlugin.instance.dataStore.getClaimAtPlayer(location, playerData, true);
                         if (clickedClaim == null || !playerData.claimSubdividing.getUniqueId().equals(clickedClaim.getUniqueId())) {
                             if (clickedClaim != null) {
                                 GriefPreventionPlugin.sendMessage(player, GriefPreventionPlugin.instance.messageData.claimCreateOverlapShort.toText());
                                 final GPClaim overlapClaim = playerData.claimSubdividing;
-                                List<Claim> claims = new ArrayList<>();
+                                Set<Claim> claims = new HashSet<>();
                                 claims.add(overlapClaim);
                                 CommandHelper.showClaims(player, claims, location.getBlockY(), true);
                             }
@@ -2304,7 +2337,7 @@ public class PlayerEventHandler {
                             Sponge.getCauseStackManager().pushCause(player);
                             Sponge.getCauseStackManager().addContext(EventContextKeys.PLUGIN, GriefPreventionPlugin.instance.pluginContainer);
                             ClaimResult result = this.dataStore.createClaim(player.getWorld(),
-                                    lesserBoundaryCorner, greaterBoundaryCorner, PlayerUtils.getClaimTypeFromShovel(playerData.shovelMode),
+                                    lesserBoundaryCorner, greaterBoundaryCorner, shovelClaimType,
                                     player.getUniqueId(), playerData.optionClaimCreateMode == 1, playerData.claimSubdividing);
 
                             GPClaim gpClaim = (GPClaim) result.getClaim().orElse(null);
@@ -2312,9 +2345,9 @@ public class PlayerEventHandler {
                             if (!result.successful()) {
                                 if (result.getResultType() == ClaimResultType.OVERLAPPING_CLAIM) {
                                     GriefPreventionPlugin.sendMessage(player, GriefPreventionPlugin.instance.messageData.claimCreateOverlapShort.toText());
-                                    List<Claim> claims = new ArrayList<>();
+                                    Set<Claim> claims = new HashSet<>();
                                     claims.add(gpClaim);
-                                    CommandHelper.showClaims(player, claims, location.getBlockY(), true);
+                                    CommandHelper.showOverlapClaims(player, claims, location.getBlockY());
                                 }
                                 event.setCancelled(true);
                                 GPTimings.PLAYER_HANDLE_SHOVEL_ACTION.stopTimingIfSync();
@@ -2345,7 +2378,7 @@ public class PlayerEventHandler {
                 // also advise him to consider /abandonclaim or resizing the existing claim
                 else {
                     GriefPreventionPlugin.sendMessage(player, GriefPreventionPlugin.instance.messageData.claimCreateOverlap.toText());
-                    List<Claim> claims = new ArrayList<>();
+                    Set<Claim> claims = new HashSet<>();
                     claims.add(claim);
                     CommandHelper.showClaims(player, claims, location.getBlockY(), true);
                 }
@@ -2361,7 +2394,7 @@ public class PlayerEventHandler {
                 Visualization visualization = new Visualization(claim, VisualizationType.ERROR);
                 visualization.createClaimBlockVisuals(location.getBlockY(), player.getLocation(), playerData);
                 visualization.apply(player);
-                List<Claim> claims = new ArrayList<>();
+                Set<Claim> claims = new HashSet<>();
                 claims.add(claim);
                 CommandHelper.showClaims(player, claims);
             }
@@ -2391,9 +2424,12 @@ public class PlayerEventHandler {
                     createClaimLimit = playerData.optionCreateClaimLimitSubdivision;
                 }
 
-                if (createClaimLimit > 0 &&
-                        (playerData.getInternalClaims().size() + 1) > playerData.optionCreateClaimLimitBasic) {
-                    GriefPreventionPlugin.sendMessage(player, GriefPreventionPlugin.instance.messageData.claimCreateFailedLimit.toText());
+                if (createClaimLimit > 0 && (playerData.getClaimTypeCount(shovelClaimType) + 1) > createClaimLimit) {
+                    final Text message = GriefPreventionPlugin.instance.messageData.claimCreateFailedLimit
+                            .apply(ImmutableMap.of(
+                            "limit", createClaimLimit,
+                            "type", shovelClaimType.name())).build();
+                    GriefPreventionPlugin.sendMessage(player, message);
                     GPTimings.PLAYER_HANDLE_SHOVEL_ACTION.stopTimingIfSync();
                     return;
                 }
@@ -2443,12 +2479,12 @@ public class PlayerEventHandler {
                 return;
             }
 
-            final GPClaim firstClaim = GriefPreventionPlugin.instance.dataStore.getClaimAt(playerData.lastShovelLocation);
-            final GPClaim clickedClaim = GriefPreventionPlugin.instance.dataStore.getClaimAt(location);
+            final GPClaim firstClaim = GriefPreventionPlugin.instance.dataStore.getClaimAtPlayer(playerData.lastShovelLocation, playerData, true);
+            final GPClaim clickedClaim = GriefPreventionPlugin.instance.dataStore.getClaimAtPlayer(location, playerData, true);
             if (!firstClaim.equals(clickedClaim)) {
                 final GPClaim overlapClaim = firstClaim.isWilderness() ? clickedClaim : firstClaim;
                 GriefPreventionPlugin.sendMessage(player, GriefPreventionPlugin.instance.messageData.claimCreateOverlapShort.toText());
-                List<Claim> claims = new ArrayList<>();
+                Set<Claim> claims = new HashSet<>();
                 claims.add(overlapClaim);
                 CommandHelper.showClaims(player, claims, location.getBlockY(), true);
                 GPTimings.PLAYER_HANDLE_SHOVEL_ACTION.stopTimingIfSync();
@@ -2473,7 +2509,7 @@ public class PlayerEventHandler {
                         player.getWorld(),
                         lesserBoundary,
                         greaterBoundary,
-                        PlayerUtils.getClaimTypeFromShovel(playerData.shovelMode), player.getUniqueId(), cuboid);
+                        shovelClaimType, player.getUniqueId(), cuboid);
             }
 
             GPClaim gpClaim = (GPClaim) result.getClaim().orElse(null);
@@ -2482,9 +2518,9 @@ public class PlayerEventHandler {
                 if (result.getResultType() == ClaimResultType.OVERLAPPING_CLAIM) {
                     GPClaim overlapClaim = (GPClaim) result.getClaim().get();
                     GriefPreventionPlugin.sendMessage(player, GriefPreventionPlugin.instance.messageData.claimCreateOverlapShort.toText());
-                    List<Claim> claims = new ArrayList<>();
+                    Set<Claim> claims = new HashSet<>();
                     claims.add(overlapClaim);
-                    CommandHelper.showClaims(player, claims, location.getBlockY(), true);
+                    CommandHelper.showOverlapClaims(player, claims, location.getBlockY());
                 }
                 GPTimings.PLAYER_HANDLE_SHOVEL_ACTION.stopTimingIfSync();
                 return;
@@ -2515,7 +2551,7 @@ public class PlayerEventHandler {
     }
 
     // helper methods for player events
-    private boolean investigateClaim(InteractItemEvent event, Player player, BlockSnapshot clickedBlock, ItemStack itemInHand) {
+    private boolean investigateClaim(InteractEvent event, Player player, BlockSnapshot clickedBlock, ItemStack itemInHand) {
         GPTimings.PLAYER_INVESTIGATE_CLAIM.startTimingIfSync();
 
         // if he's investigating a claim
@@ -2525,7 +2561,7 @@ public class PlayerEventHandler {
         }
 
         final GPPlayerData playerData = GriefPreventionPlugin.instance.dataStore.getOrCreatePlayerData(player.getWorld(), player.getUniqueId());
-        if (event instanceof InteractItemEvent.Primary) {
+        if (event instanceof InteractItemEvent.Primary || event instanceof InteractBlockEvent.Primary) {
             playerData.revertActiveVisual(player);
             if (this.worldEditProvider != null) {
                 this.worldEditProvider.revertVisuals(player, playerData, null);
@@ -2548,7 +2584,7 @@ public class PlayerEventHandler {
 
                 // find nearby claims
                 Location<World> nearbyLocation = playerData.lastValidInspectLocation != null ? playerData.lastValidInspectLocation : player.getLocation();
-                List<Claim> claims = this.dataStore.getNearbyClaims(nearbyLocation);
+                Set<Claim> claims = BlockUtils.getNearbyClaims(nearbyLocation, playerData.optionRadiusClaimInspect);
                 int height = playerData.lastValidInspectLocation != null ? playerData.lastValidInspectLocation.getBlockY() : player.getProperty(EyeLocationProperty.class).get().getValue().getFloorY();
                 Visualization visualization = Visualization.fromClaims(claims, playerData.optionClaimCreateMode == 1 ? height : player.getProperty(EyeLocationProperty.class).get().getValue().getFloorY(), player.getLocation(), playerData, null);
                 visualization.apply(player);
@@ -2563,7 +2599,7 @@ public class PlayerEventHandler {
                         worldEditProvider.revertVisuals(player, playerData, null);
                         worldEditProvider.visualizeClaims(claims, player, playerData, true);
                     }
-                    CommandHelper.showClaims(player, new ArrayList<Claim>(claims));
+                    CommandHelper.showClaims(player, claims);
                 }
                 GPTimings.PLAYER_INVESTIGATE_CLAIM.stopTimingIfSync();
                 return true;
@@ -2574,7 +2610,7 @@ public class PlayerEventHandler {
                 return false;
             }
         } else {
-            claim = this.dataStore.getClaimAt(clickedBlock.getLocation().get());
+            claim = this.dataStore.getClaimAtPlayer(clickedBlock.getLocation().get(), playerData, true);
             if (claim.isWilderness()) {
                 GriefPreventionPlugin.sendMessage(player, GriefPreventionPlugin.instance.messageData.blockNotClaimed.toText());
                 GPTimings.PLAYER_INVESTIGATE_CLAIM.stopTimingIfSync();
@@ -2591,7 +2627,7 @@ public class PlayerEventHandler {
             if (this.worldEditProvider != null) {
                 worldEditProvider.visualizeClaim(claim, player, playerData, true);
             }
-            List<Claim> claims = new ArrayList<>();
+            Set<Claim> claims = new HashSet<>();
             claims.add(claim);
             CommandHelper.showClaims(player, claims);
         }
@@ -2636,27 +2672,31 @@ public class PlayerEventHandler {
     }
 
     private void sendInteractEntityDenyMessage(ItemStack playerItem, Entity entity, GPClaim claim, Player player, HandType handType) {
-        if (claim.getData() != null && !claim.getData().allowDenyMessages()) {
+        if (entity instanceof Player || (claim.getData() != null && !claim.getData().allowDenyMessages())) {
             return;
         }
 
+        final String entityId = entity.getType() != null ? entity.getType().getId() : ((net.minecraft.entity.Entity) entity).getName();
         if (playerItem == null || playerItem == ItemTypes.NONE || playerItem.isEmpty()) {
             final Text message = GriefPreventionPlugin.instance.messageData.permissionInteractEntity
                     .apply(ImmutableMap.of(
                     "owner", claim.getOwnerName(),
-                    "entity", entity.getType().getId())).build();
+                    "entity", entityId)).build();
             GriefPreventionPlugin.sendClaimDenyMessage(claim, player, message);
         } else {
             final Text message = GriefPreventionPlugin.instance.messageData.permissionInteractItemEntity
                     .apply(ImmutableMap.of(
                     "item", playerItem.getType().getId(),
-                    "entity", entity.getType().getId())).build();
+                    "entity", entityId)).build();
             GriefPreventionPlugin.sendClaimDenyMessage(claim, player, message);
         }
     }
 
     private void sendInteractBlockDenyMessage(ItemStack playerItem, BlockSnapshot blockSnapshot, GPClaim claim, Player player, GPPlayerData playerData, HandType handType) {
         if (claim.getData() != null && !claim.getData().allowDenyMessages()) {
+            return;
+        }
+        if (SpongeImplHooks.isFakePlayer((net.minecraft.entity.Entity) player)) {
             return;
         }
 

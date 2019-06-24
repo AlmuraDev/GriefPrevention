@@ -45,7 +45,7 @@ import org.spongepowered.api.world.DimensionType;
 import org.spongepowered.api.world.Location;
 import org.spongepowered.api.world.World;
 import org.spongepowered.api.world.storage.WorldProperties;
-import org.spongepowered.common.interfaces.world.IMixinDimensionType;
+import org.spongepowered.common.bridge.world.DimensionTypeBridge;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -71,7 +71,6 @@ public class FlatFileDataStore extends DataStore {
     public final static Path claimTemplatePath = claimDataPath.resolve("Templates");
     public final static Path worldClaimDataPath = Paths.get("GriefPreventionData", "WorldClaim");
     public final static Path playerDataPath = Paths.get("GriefPreventionData", "PlayerData");
-    public final static Path polisDataPath = GriefPreventionPlugin.instance.getConfigPath().getParent().resolve("polis").resolve("data");
     public final static Path redProtectDataPath = GriefPreventionPlugin.instance.getConfigPath().getParent().resolve("RedProtect").resolve("data");
     public final static Map<UUID, Task> cleanupClaimTasks = Maps.newHashMap();
     private final Path rootConfigPath = GriefPreventionPlugin.instance.getConfigPath().resolve("worlds");
@@ -118,7 +117,7 @@ public class FlatFileDataStore extends DataStore {
 
     public void registerWorld(WorldProperties worldProperties) {
         DimensionType dimType = worldProperties.getDimensionType();
-        Path dimPath = rootConfigPath.resolve(((IMixinDimensionType) dimType).getModId()).resolve(((IMixinDimensionType) dimType).getEnumName());
+        Path dimPath = rootConfigPath.resolve(((DimensionTypeBridge) dimType).getModId()).resolve(((DimensionTypeBridge) dimType).getEnumName());
         if (!Files.exists(dimPath.resolve(worldProperties.getWorldName()))) {
             try {
                 Files.createDirectories(dimPath.resolve(worldProperties.getWorldName()));
@@ -162,7 +161,7 @@ public class FlatFileDataStore extends DataStore {
     public void loadWorldData(World world) {
         final WorldProperties worldProperties = world.getProperties();
         final DimensionType dimType = worldProperties.getDimensionType();
-        final Path dimPath = rootConfigPath.resolve(((IMixinDimensionType) dimType).getModId()).resolve(((IMixinDimensionType) dimType).getEnumName());
+        final Path dimPath = rootConfigPath.resolve(((DimensionTypeBridge) dimType).getModId()).resolve(((DimensionTypeBridge) dimType).getEnumName());
         final Path newWorldDataPath = dimPath.resolve(worldProperties.getWorldName());
         GPClaimManager claimWorldManager = this.claimWorldManagers.get(worldProperties.getUniqueId());
         if (claimWorldManager == null) {
@@ -280,17 +279,9 @@ public class FlatFileDataStore extends DataStore {
 
             try {
                this.loadClaim(file, worldProperties, claimId);
-            }
-
-            // if there's any problem with the file's content, log an error message and skip it
-            catch (Exception e) {
-                if (e.getMessage() != null && e.getMessage().contains("World not found")) {
-                    file.delete();
-                } else {
-                    StringWriter errors = new StringWriter();
-                    e.printStackTrace(new PrintWriter(errors));
-                    GriefPreventionPlugin.addLogEntry(file.getName() + " " + errors.toString(), CustomLogEntryTypes.Exception);
-                }
+            } catch (Exception e) {
+                GriefPreventionPlugin.instance.getLogger().error(file.getAbsolutePath() + " failed to load.");
+                e.printStackTrace();
             }
         }
     }
@@ -390,13 +381,6 @@ public class FlatFileDataStore extends DataStore {
             throw new Exception("Claim file '" + claimFile.getName() + "' has corrupted data and cannot be loaded. Skipping...");
         }
 
-        // Validate Y values for older builds which would set both lesser and greater Y to same value
-        if (!cuboid && GriefPreventionPlugin.getGlobalConfig().getConfig().migrator.classicMigrator) {
-            // fix Y boundaries
-            lesserCorner = new Vector3i(lesserCorner.getX(), 0, lesserCorner.getZ());
-            greaterCorner = new Vector3i(greaterCorner.getX(), world.getDimension().getBuildHeight() - 1, greaterCorner.getZ());
-            writeToStorage = true;
-        }
         Location<World> lesserBoundaryCorner = new Location<World>(world, lesserCorner);
         Location<World> greaterBoundaryCorner = new Location<World>(world, greaterCorner);
 
@@ -420,14 +404,13 @@ public class FlatFileDataStore extends DataStore {
             } catch (Throwable t) {
                 t.printStackTrace();
             }
+            if (parentClaim == null) {
+                throw new Exception("Required parent claim '" + parent + " no longer exists. Skipping...");
+            }
             claim.parent = parentClaim;
         }
 
         claimManager.addClaim(claim, writeToStorage);
-        if (!claim.isWilderness()) {
-            claimStorage.migrateSubdivision(claim);
-        }
-
         this.claimLoadCount++;
         return claim;
     }
@@ -453,6 +436,9 @@ public class FlatFileDataStore extends DataStore {
     public void deleteClaimFromSecondaryStorage(GPClaim claim) {
         try {
             Files.delete(claim.getClaimStorage().filePath);
+            if (claim.getClaimStorage().folderPath.toFile().listFiles().length == 0) {
+                Files.delete(claim.getClaimStorage().folderPath);
+            }
         } catch (IOException e) {
             e.printStackTrace();
             GriefPreventionPlugin.addLogEntry("Error: Unable to delete claim file \"" + claim.getClaimStorage().filePath + "\".");

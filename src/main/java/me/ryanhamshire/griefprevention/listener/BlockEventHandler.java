@@ -47,7 +47,6 @@ import me.ryanhamshire.griefprevention.util.CauseContextHelper;
 import me.ryanhamshire.griefprevention.visual.Visualization;
 import me.ryanhamshire.griefprevention.visual.VisualizationType;
 import net.minecraft.block.BlockBasePressurePlate;
-import net.minecraft.block.BlockContainer;
 import net.minecraft.entity.item.EntityFallingBlock;
 import net.minecraft.entity.item.EntityItem;
 import net.minecraft.inventory.IInventory;
@@ -87,11 +86,11 @@ import org.spongepowered.api.world.LocatableBlock;
 import org.spongepowered.api.world.Location;
 import org.spongepowered.api.world.World;
 import org.spongepowered.api.world.explosion.Explosion;
-import org.spongepowered.common.interfaces.world.IMixinLocation;
+import org.spongepowered.common.bridge.block.BlockBridge;
+import org.spongepowered.common.bridge.world.LocationBridge;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -124,26 +123,45 @@ public class BlockEventHandler {
 
         final Cause cause = event.getCause();
         final EventContext context = event.getContext();
-        final User user = CauseContextHelper.getEventUser(event);
-        final boolean hasFakePlayer = context.containsKey(EventContextKeys.FAKE_PLAYER);
-        if (user != null) {
-            if (context.containsKey(EventContextKeys.PISTON_RETRACT)) {
+        if (context.containsKey(EventContextKeys.PISTON_RETRACT)) {
+            return;
+        }
+        if (context.containsKey(EventContextKeys.BLOCK_EVENT_PROCESS)) {
+            return;
+        }
+
+        final TileEntity tileEntity = cause.first(TileEntity.class).orElse(null);
+        final LocatableBlock eventBlock = context.get(EventContextKeys.BLOCK_EVENT_QUEUE).orElse(null);
+        final boolean pistonExtend = context.containsKey(EventContextKeys.PISTON_EXTEND);
+        final boolean isBlockEvent = eventBlock != null;
+        Object source = tileEntity != null ? tileEntity : cause.root();
+        Location<World> sourceLocation = null;
+        boolean isVanillaBlock = true;
+        if (!pistonExtend && isBlockEvent) {
+            isVanillaBlock = ((BlockBridge) eventBlock.getBlockState().getType()).isVanilla();
+            if (isVanillaBlock) {
                 return;
+            }
+            if (context.containsKey(EventContextKeys.NEIGHBOR_NOTIFY_SOURCE)) {
+                source = eventBlock;
+                sourceLocation = eventBlock.getLocation();
             }
         }
 
+        final User user = CauseContextHelper.getEventUser(event);
         final LocatableBlock locatableBlock = cause.first(LocatableBlock.class).orElse(null);
-        final TileEntity tileEntity = cause.first(TileEntity.class).orElse(null);
+        final boolean hasFakePlayer = context.containsKey(EventContextKeys.FAKE_PLAYER);
         Entity sourceEntity = null;
         // Always use TE as source if available
-        final Object source = tileEntity != null ? tileEntity : cause.root();
-        Location<World> sourceLocation = locatableBlock != null ? locatableBlock.getLocation() : tileEntity != null ? tileEntity.getLocation() : null;
-        if (sourceLocation == null && source instanceof Entity) {
-            // check entity
-            sourceEntity = ((Entity) source);
-            sourceLocation = sourceEntity.getLocation();
+        if (sourceLocation == null) {
+             sourceLocation = locatableBlock != null ? locatableBlock.getLocation() : tileEntity != null ? tileEntity.getLocation() : null;
+             if (sourceLocation == null && source instanceof Entity) {
+                 // check entity
+                 sourceEntity = ((Entity) source);
+                 sourceLocation = sourceEntity.getLocation();
+             }
         }
-        final boolean pistonExtend = context.containsKey(EventContextKeys.PISTON_EXTEND);
+
         final boolean isLiquidSource = context.containsKey(EventContextKeys.LIQUID_FLOW);
         final boolean isFireSource = isLiquidSource ? false : context.containsKey(EventContextKeys.FIRE_SPREAD);
         final boolean isLeafDecay = context.containsKey(EventContextKeys.LEAVES_DECAY);
@@ -157,6 +175,7 @@ public class BlockEventHandler {
             return;
         }
 
+        final boolean shouldLogEvent = (!isLiquidSource && !isFireSource && !isLeafDecay && !pistonExtend) || !isVanillaBlock;
         lastBlockPreCancelled = false;
         final boolean isForgePlayerBreak = context.containsKey(EventContextKeys.PLAYER_BREAK);
         GPTimings.BLOCK_PRE_EVENT.startTimingIfSync();
@@ -164,7 +183,6 @@ public class BlockEventHandler {
         if (isForgePlayerBreak && !hasFakePlayer && source instanceof Player) {
             final Player player = (Player) source;
             GPClaim targetClaim = null;
-            final GPPlayerData playerData = GriefPreventionPlugin.instance.dataStore.getPlayerData(world, player.getUniqueId());
             for (Location<World> location : event.getLocations()) {
                 if (GriefPreventionPlugin.isTargetIdBlacklisted(ClaimFlag.BLOCK_BREAK.toString(), location.getBlock(), world.getProperties())) {
                    GPTimings.BLOCK_PRE_EVENT.stopTimingIfSync();
@@ -174,11 +192,6 @@ public class BlockEventHandler {
                 targetClaim = this.dataStore.getClaimAt(location, targetClaim);
                 if (location.getBlockType() == BlockTypes.AIR) {
                     continue;
-                }
-                if (!checkSurroundings(event, location, player, playerData, targetClaim)) {
-                    event.setCancelled(true);
-                    GPTimings.BLOCK_PRE_EVENT.stopTimingIfSync();
-                    return;
                 }
 
                 // check overrides
@@ -224,49 +237,61 @@ public class BlockEventHandler {
                         continue;
                     }
                 }
+                if (GriefPreventionPlugin.isTargetIdBlacklisted(ClaimFlag.BLOCK_BREAK.toString(), location.getBlock(), world.getProperties())) {
+                    continue;
+                }
 
                 final BlockState blockState = location.getBlock();
                 targetClaim = this.dataStore.getClaimAt(location, targetClaim);
-                // If a player successfully interacted with a block recently such as a pressure plate, ignore check
-                // This fixes issues such as pistons not being able to extend
-                if (user != null && !isForgePlayerBreak && playerData != null && playerData.checkLastInteraction(targetClaim, user)) {
-                    continue;
-                }
                 if (user != null && targetClaim.isUserTrusted(user, TrustType.BUILDER)) {
-                    GPPermissionHandler.addEventLogEntry(event, location, source, blockState, user, GPPermissions.BLOCK_BREAK, TrustType.BUILDER.name().toLowerCase(), Tristate.TRUE);
+                    if (shouldLogEvent) {
+                        GPPermissionHandler.addEventLogEntry(event, location, source, blockState, user, GPPermissions.BLOCK_BREAK, TrustType.BUILDER.name().toLowerCase(), Tristate.TRUE);
+                    }
                     continue;
                 }
                 if (sourceClaim.getOwnerUniqueId().equals(targetClaim.getOwnerUniqueId()) && user == null && sourceEntity == null && !isFireSource && !isLeafDecay) {
-                    GPPermissionHandler.addEventLogEntry(event, location, source, blockState, user, GPPermissions.BLOCK_BREAK, "owner", Tristate.TRUE);
+                    if (shouldLogEvent) {
+                        GPPermissionHandler.addEventLogEntry(event, location, source, blockState, user, GPPermissions.BLOCK_BREAK, "owner", Tristate.TRUE);
+                    }
+                    continue;
+                }
+                // If a player successfully interacted with a block recently such as a pressure plate, ignore check
+                // This fixes issues such as pistons not being able to extend
+                if (user != null && !isForgePlayerBreak && playerData != null && playerData.checkLastInteraction(targetClaim, user)) {
+                    if (shouldLogEvent) {
+                        GPPermissionHandler.addEventLogEntry(event, location, source, blockState, user, GPPermissions.BLOCK_BREAK, TrustType.BUILDER.name().toLowerCase(), Tristate.TRUE);
+                    }
                     continue;
                 }
                 if (user != null && pistonExtend) {
                     if (targetClaim.isUserTrusted(user, TrustType.ACCESSOR)) {
-                        GPPermissionHandler.addEventLogEntry(event, location, source, blockState, user, GPPermissions.BLOCK_BREAK, TrustType.ACCESSOR.name().toLowerCase(), Tristate.TRUE);
+                        if (shouldLogEvent) {
+                            GPPermissionHandler.addEventLogEntry(event, location, source, blockState, user, GPPermissions.BLOCK_BREAK, TrustType.ACCESSOR.name().toLowerCase(), Tristate.TRUE);
+                        }
                         continue;
                     }
                 }
                 if (isLeafDecay) {
-                    if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.LEAF_DECAY, source, blockState, user) == Tristate.FALSE) {
+                    if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.LEAF_DECAY, source, blockState, user, true) == Tristate.FALSE) {
                         event.setCancelled(true);
                         GPTimings.BLOCK_PRE_EVENT.stopTimingIfSync();
                         return;
                     }
                 } else if (isFireSource) {
-                    if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.FIRE_SPREAD, source, blockState, user) == Tristate.FALSE) {
+                    if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.FIRE_SPREAD, source, blockState, user, true) == Tristate.FALSE) {
                         event.setCancelled(true);
                         GPTimings.BLOCK_PRE_EVENT.stopTimingIfSync();
                         return;
                     }
                 } else if (isLiquidSource) {
-                    if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.LIQUID_FLOW, source, blockState, user) == Tristate.FALSE) {
+                    if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.LIQUID_FLOW, source, blockState, user, true) == Tristate.FALSE) {
                         event.setCancelled(true);
                         lastBlockPreCancelled = true;
                         GPTimings.BLOCK_PRE_EVENT.stopTimingIfSync();
                         return;
                     }
                     continue;
-                } else if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.BLOCK_BREAK, source, blockState, user) == Tristate.FALSE) {
+                } else if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.BLOCK_BREAK, source, blockState, user, true) == Tristate.FALSE) {
                     // PRE events can be spammy so we need to avoid sending player messages here.
                     event.setCancelled(true);
                     lastBlockPreCancelled = true;
@@ -285,6 +310,9 @@ public class BlockEventHandler {
                         continue;
                     }
                 }
+                if (GriefPreventionPlugin.isTargetIdBlacklisted(ClaimFlag.BLOCK_BREAK.toString(), location.getBlock(), world.getProperties())) {
+                    continue;
+                }
 
                 final BlockState blockState = location.getBlock();
                 targetClaim = this.dataStore.getClaimAt(location, targetClaim);
@@ -294,25 +322,27 @@ public class BlockEventHandler {
                     continue;
                 }
                 if (targetClaim.isUserTrusted(user, TrustType.BUILDER)) {
-                    GPPermissionHandler.addEventLogEntry(event, location, source, blockState, user, GPPermissions.BLOCK_BREAK, TrustType.BUILDER.name().toLowerCase(), Tristate.TRUE);
+                    if (shouldLogEvent) {
+                        GPPermissionHandler.addEventLogEntry(event, location, source, blockState, user, GPPermissions.BLOCK_BREAK, TrustType.BUILDER.name().toLowerCase(), Tristate.TRUE);
+                    }
                     continue;
                 }
 
                 if (isFireSource) {
-                    if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.FIRE_SPREAD, source, blockState, user) == Tristate.FALSE) {
+                    if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.FIRE_SPREAD, source, blockState, user, true) == Tristate.FALSE) {
                         event.setCancelled(true);
                         GPTimings.BLOCK_PRE_EVENT.stopTimingIfSync();
                         return;
                     }
                 } else if (isLiquidSource) {
-                    if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.LIQUID_FLOW, source, blockState, user) == Tristate.FALSE) {
+                    if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.LIQUID_FLOW, source, blockState, user, true) == Tristate.FALSE) {
                         event.setCancelled(true);
                         lastBlockPreCancelled = true;
                         GPTimings.BLOCK_PRE_EVENT.stopTimingIfSync();
                         return;
                     }
                     continue;
-                } else if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.BLOCK_BREAK, source, blockState, user) == Tristate.FALSE) {
+                } else if (GPPermissionHandler.getClaimPermission(event, location, targetClaim, GPPermissions.BLOCK_BREAK, source, blockState, user, true) == Tristate.FALSE) {
                     event.setCancelled(true);
                     lastBlockPreCancelled = true;
                     GPTimings.BLOCK_PRE_EVENT.stopTimingIfSync();
@@ -326,8 +356,16 @@ public class BlockEventHandler {
     // Handle fluids flowing into claims
     @Listener(order = Order.FIRST, beforeModifications = true)
     public void onBlockNotify(NotifyNeighborBlockEvent event) {
+        if (event.getContext().containsKey(EventContextKeys.BLOCK_EVENT_PROCESS)) {
+            return;
+        }
+        final TileEntity tileEntity = event.getCause().first(TileEntity.class).orElse(null);
+        // Pistons are handled in Pre handler
+        if (tileEntity instanceof TileEntityPiston) {
+            return;
+        }
+
         LocatableBlock locatableBlock = event.getCause().first(LocatableBlock.class).orElse(null);
-        TileEntity tileEntity = event.getCause().first(TileEntity.class).orElse(null);
         Location<World> sourceLocation = locatableBlock != null ? locatableBlock.getLocation() : tileEntity != null ? tileEntity.getLocation() : null;
         GPClaim sourceClaim = null;
         GPPlayerData playerData = null;
@@ -441,7 +479,7 @@ public class BlockEventHandler {
             return;
         }
 
-        BlockPos collidePos = ((IMixinLocation)(Object) event.getTargetLocation()).getBlockPos();
+        BlockPos collidePos = ((LocationBridge)(Object) event.getTargetLocation()).getBlockPos();
         short shortPos = BlockUtils.blockPosToShort(collidePos);
         int entityId = ((net.minecraft.entity.Entity) source).getEntityId();
         BlockPosCache entityBlockCache = BlockUtils.ENTITY_BLOCK_CACHE.get(entityId);
@@ -627,6 +665,13 @@ public class BlockEventHandler {
         if (!GPFlags.BLOCK_BREAK || event instanceof ExplosionEvent) {
             return;
         }
+        if (event.getCause().root() instanceof TileEntityPiston) {
+            return;
+        }
+        if (event.getContext().containsKey(EventContextKeys.BLOCK_EVENT_PROCESS)) {
+            return;
+        }
+
         if (lastBlockPreTick == Sponge.getServer().getRunningTimeTicks()) {
             event.setCancelled(lastBlockPreCancelled);
             return;
@@ -717,6 +762,13 @@ public class BlockEventHandler {
         if (source instanceof TileEntityPiston) {
             return;
         }
+        if (event.getContext().containsKey(EventContextKeys.BLOCK_EVENT_PROCESS)) {
+            return;
+        }
+        if (lastBlockPreTick == Sponge.getServer().getRunningTimeTicks() && !(event.getCause().root() instanceof Player)) {
+            event.setCancelled(lastBlockPreCancelled);
+            return;
+        }
 
         final World world = event.getTransactions().get(0).getFinal().getLocation().get().getExtent();
         if (!GriefPreventionPlugin.instance.claimsEnabledForWorld(world.getProperties())) {
@@ -770,14 +822,9 @@ public class BlockEventHandler {
                 continue;
             }
 
-            targetClaim = this.dataStore.getClaimAt(location, targetClaim);
+            targetClaim = this.dataStore.getClaimAtPlayer(location, targetClaim, playerData, true);
             if (locatable != null && targetClaim.isWilderness()) {
                 continue;
-            }
-            if (!checkSurroundings(event, location, player, playerData, targetClaim)) {
-                event.setCancelled(true);
-                GPTimings.BLOCK_PLACE_EVENT.stopTimingIfSync();
-                return;
             }
 
             if (GPFlags.BLOCK_PLACE) {
@@ -825,7 +872,7 @@ public class BlockEventHandler {
                 continue;
             }
 
-            if (targetClaim.isWilderness() && activeConfig.getConfig().claim.claimRadius > -1) {
+            if (targetClaim.isWilderness() && activeConfig.getConfig().claim.autoChestClaimBlockRadius > -1) {
                 net.minecraft.tileentity.TileEntity tileEntity = (net.minecraft.tileentity.TileEntity) block.getLocation().get().getTileEntity().orElse(null);
                 if (tileEntity == null || !(tileEntity instanceof IInventory) || !(tileEntity instanceof TileEntityChest)) {
                     GPTimings.BLOCK_PLACE_EVENT.stopTimingIfSync();
@@ -845,13 +892,13 @@ public class BlockEventHandler {
                     return;
                 }
 
-                int radius = activeConfig.getConfig().claim.claimRadius;
+                int radius = activeConfig.getConfig().claim.autoChestClaimBlockRadius;
 
                 // if the player doesn't have any claims yet, automatically create a claim centered at the chest
                 if (playerData.getInternalClaims().size() == 0) {
                     try (final CauseStackManager.StackFrame frame = Sponge.getCauseStackManager().pushCauseFrame()) {
                         // radius == 0 means protect ONLY the chest
-                        if (activeConfig.getConfig().claim.claimRadius == 0) {
+                        if (activeConfig.getConfig().claim.autoChestClaimBlockRadius == 0) {
                             Sponge.getCauseStackManager().pushCause(player);
                             final ClaimResult result = GriefPrevention.getApi().createClaimBuilder()
                                     .bounds(block.getPosition(), block.getPosition())
@@ -1029,34 +1076,5 @@ public class BlockEventHandler {
         }
 
         return sourceClaim;
-    }
-
-    // TODO: Add configuration for distance between claims
-    private boolean checkSurroundings(org.spongepowered.api.event.Event event, Location<World> location, Player player, GPPlayerData playerData, GPClaim targetClaim) {
-        if (playerData == null) {
-            return true;
-        }
-        // Don't allow players to break blocks next to land they do not own
-        if (!playerData.canIgnoreClaim(targetClaim)) {
-            // check surrounding blocks for access
-            for (Direction direction : BlockUtils.CARDINAL_DIRECTIONS) {
-                Location<World> loc = location.getBlockRelative(direction);
-                if (!(loc.getBlockType() instanceof BlockContainer)) {
-                    continue;
-                }
-                final GPClaim claim = this.dataStore.getClaimAt(loc, targetClaim);
-                if (!claim.isWilderness() && !targetClaim.equals(claim)) {
-                    Tristate result = GPPermissionHandler.getClaimPermission(event, loc, claim, GPPermissions.BLOCK_BREAK, player, loc.getBlock(), player, TrustType.BUILDER, true);
-                    if (result != Tristate.TRUE) {
-                        final Text message = GriefPreventionPlugin.instance.messageData.permissionBuildNearClaim
-                                .apply(ImmutableMap.of(
-                                "owner", claim.getOwnerName())).build();
-                        GriefPreventionPlugin.sendClaimDenyMessage(claim, player, message);
-                        return false;
-                    }
-                }
-            }
-        }
-        return true;
     }
 }

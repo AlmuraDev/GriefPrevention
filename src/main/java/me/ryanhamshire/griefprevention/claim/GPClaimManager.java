@@ -44,6 +44,7 @@ import me.ryanhamshire.griefprevention.configuration.ClaimStorageData;
 import me.ryanhamshire.griefprevention.configuration.GriefPreventionConfig;
 import me.ryanhamshire.griefprevention.configuration.PlayerStorageData;
 import me.ryanhamshire.griefprevention.event.GPDeleteClaimEvent;
+import me.ryanhamshire.griefprevention.util.BlockUtils;
 import net.minecraft.util.math.ChunkPos;
 import org.spongepowered.api.Sponge;
 import org.spongepowered.api.entity.living.player.Player;
@@ -52,6 +53,7 @@ import org.spongepowered.api.service.economy.EconomyService;
 import org.spongepowered.api.service.economy.account.Account;
 import org.spongepowered.api.service.economy.account.UniqueAccount;
 import org.spongepowered.api.text.Text;
+import org.spongepowered.api.util.Direction;
 import org.spongepowered.api.world.Location;
 import org.spongepowered.api.world.World;
 import org.spongepowered.api.world.storage.WorldProperties;
@@ -78,7 +80,7 @@ public class GPClaimManager implements ClaimManager {
     // Player UUID -> player data
     private Map<UUID, GPPlayerData> playerDataList = Maps.newHashMap();
     // World claim list
-    private List<Claim> worldClaims = new ArrayList<>();
+    private Set<Claim> worldClaims = new HashSet<>();
     // Claim UUID -> Claim
     private Map<UUID, Claim> claimUniqueIdMap = Maps.newHashMap();
     // String -> Claim
@@ -113,14 +115,14 @@ public class GPClaimManager implements ClaimManager {
         }
 
         PlayerStorageData playerStorage = new PlayerStorageData(playerFilePath);
-        List<Claim> claimList = this.createPlayerClaimList(playerUniqueId);
+        Set<Claim> claimList = this.createPlayerClaimList(playerUniqueId);
         GPPlayerData playerData = new GPPlayerData(this.worldProperties, playerUniqueId, playerStorage, this.activeConfig, claimList);
         this.getPlayerDataMap().put(playerUniqueId, playerData);
         return playerData;
     }
 
-    private List<Claim> createPlayerClaimList(UUID playerUniqueId) {
-        List<Claim> claimList = new ArrayList<>();
+    private Set<Claim> createPlayerClaimList(UUID playerUniqueId) {
+        Set<Claim> claimList = new HashSet<>();
         if (DataStore.USE_GLOBAL_PLAYER_STORAGE) {
             for (World world : Sponge.getServer().getWorlds()) {
                 GPClaimManager claimmanager = DATASTORE.getClaimWorldManager(world.getProperties());
@@ -215,7 +217,7 @@ public class GPClaimManager implements ClaimManager {
             this.deleteChunkHashes((GPClaim) claim);
             if (!claim.isAdminClaim() && (!claim.isInTown() || !claim.getTownClaim().getOwnerUniqueId().equals(claim.getOwnerUniqueId()))) {
                 final GPPlayerData playerData = this.getPlayerDataMap().get(claim.getOwnerUniqueId());
-                List<Claim> playerClaims = playerData.getInternalClaims();
+                Set<Claim> playerClaims = playerData.getInternalClaims();
                 if (!playerClaims.contains(claim)) {
                     playerClaims.add(claim);
                 }
@@ -229,7 +231,7 @@ public class GPClaimManager implements ClaimManager {
         final UUID ownerId = claim.getOwnerUniqueId();
         final GPPlayerData playerData = this.getPlayerDataMap().get(ownerId);
         if (playerData != null) {
-            List<Claim> playerClaims = playerData.getInternalClaims();
+            Set<Claim> playerClaims = playerData.getInternalClaims();
             if (!playerClaims.contains(claim)) {
                 playerClaims.add(claim);
             }
@@ -277,36 +279,22 @@ public class GPClaimManager implements ClaimManager {
         final GPClaim gpClaim = (GPClaim) claim;
         List<Claim> subClaims = claim.getChildren(false);
         for (Claim child : subClaims) {
-            if (deleteChildren) {
+            if (deleteChildren || (gpClaim.parent == null && child.isSubdivision())) {
                 this.deleteClaimInternal(child, true);
                 continue;
             }
 
-            GPClaim childClaim = (GPClaim) child;
-            ((GPClaim) claim).children.remove(childClaim);
-            childClaim.parent = gpClaim.parent;
-            String fileName = childClaim.getClaimStorage().filePath.getFileName().toString();
-            final Path newPath = gpClaim.getClaimStorage().filePath.getParent().getParent().resolve(childClaim.getType().name().toLowerCase()).resolve(fileName);
-            try {
-                Files.createDirectories(newPath.getParent());
-                Files.move(childClaim.getClaimStorage().filePath, newPath);
-                childClaim.setClaimStorage(new ClaimStorageData(newPath, this.getWorldProperties().getUniqueId(), (ClaimDataConfig) childClaim.getInternalClaimData()));
-                if (childClaim.parent == null) {
-                    this.addClaim(childClaim, false);
-                }
-            } catch (IOException e) {
-                e.printStackTrace();
+            final GPClaim parentClaim = (GPClaim) claim;
+            final GPClaim childClaim = (GPClaim) child;
+            if (parentClaim.parent != null) {
+                migrateChildToNewParent(parentClaim.parent, childClaim);
+            } else {
+                // move child to parent folder
+                migrateChildToNewParent(null, childClaim);
             }
         }
 
-        // player may be offline so check is needed
-        GPPlayerData playerData = this.getPlayerDataMap().get(claim.getOwnerUniqueId());
-        if (playerData != null) {
-            playerData.getInternalClaims().remove(claim);
-            if (playerData.lastClaim != null) {
-                playerData.lastClaim.clear();
-            }
-        }
+        resetPlayerClaimVisuals(claim);
         // transfer bank balance to owner
         final Account bankAccount = claim.getEconomyAccount().orElse(null);
         if (bankAccount != null) {
@@ -328,7 +316,57 @@ public class GPClaimManager implements ClaimManager {
             gpClaim.parent.children.remove(claim);
         }
 
-        // revert visuals for all players watching this claim
+        DATASTORE.deleteClaimFromSecondaryStorage((GPClaim) claim);
+    }
+
+    // Migrates children to new parent
+    private void migrateChildToNewParent(GPClaim parentClaim, GPClaim childClaim) {
+        childClaim.parent = parentClaim;
+        String fileName = childClaim.getClaimStorage().filePath.getFileName().toString();
+        Path newPath = null;
+        if (parentClaim == null) {
+            newPath = childClaim.getClaimStorage().folderPath.getParent().getParent().resolve(childClaim.getType().name().toLowerCase()).resolve(fileName);
+        } else {
+            // Only store in same claim type folder if not admin.
+            // Admin claims are currently the only type that can hold children of same type within
+            if (childClaim.getType().equals(parentClaim.getType()) && (!parentClaim.isAdminClaim())) {
+                newPath = parentClaim.getClaimStorage().folderPath.resolve(fileName);
+            } else {
+                newPath = parentClaim.getClaimStorage().folderPath.resolve(childClaim.getType().name().toLowerCase()).resolve(fileName);
+            }
+        }
+
+        try {
+            Files.createDirectories(newPath.getParent());
+            Files.move(childClaim.getClaimStorage().filePath, newPath);
+            if (childClaim.getClaimStorage().folderPath.toFile().listFiles().length == 0) {
+                Files.delete(childClaim.getClaimStorage().folderPath);
+            }
+            childClaim.setClaimStorage(new ClaimStorageData(newPath, this.getWorldProperties().getUniqueId(), (ClaimDataConfig) childClaim.getInternalClaimData()));
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        // Make sure to update new parent in storage
+        final UUID parentUniqueId = parentClaim == null ? null : parentClaim.getUniqueId();
+        childClaim.getInternalClaimData().setParent(parentUniqueId);
+        this.addClaim(childClaim, true);
+        for (Claim child : childClaim.children) {
+            migrateChildToNewParent(childClaim, (GPClaim) child);
+        }
+    }
+
+    private void resetPlayerClaimVisuals(Claim claim) {
+        // player may be offline so check is needed
+        GPPlayerData playerData = this.getPlayerDataMap().get(claim.getOwnerUniqueId());
+        if (playerData != null) {
+            playerData.getInternalClaims().remove(claim);
+            if (playerData.lastClaim != null) {
+                playerData.lastClaim.clear();
+            }
+        }
+
+        // reset visuals for all players watching this claim
         List<UUID> playersWatching = new ArrayList<>(((GPClaim) claim).playersWatching);
         for (UUID playerUniqueId : playersWatching) {
             Player player = Sponge.getServer().getPlayer(playerUniqueId).orElse(null);
@@ -343,8 +381,6 @@ public class GPClaimManager implements ClaimManager {
                 }
             }
         }
-
-        DATASTORE.deleteClaimFromSecondaryStorage((GPClaim) claim);
     }
 
     private void deleteChunkHashes(GPClaim claim) {
@@ -366,10 +402,10 @@ public class GPClaimManager implements ClaimManager {
         return Optional.ofNullable(this.claimUniqueIdMap.get(claimUniqueId));
     }
 
-    public List<Claim> getInternalPlayerClaims(UUID playerUniqueId) {
+    public Set<Claim> getInternalPlayerClaims(UUID playerUniqueId) {
         final GPPlayerData playerData = this.getPlayerDataMap().get(playerUniqueId);
         if (playerData == null) {
-            return new ArrayList<>();
+            return new HashSet<>();
         }
         return playerData.getInternalClaims();
     }
@@ -406,6 +442,12 @@ public class GPClaimManager implements ClaimManager {
 
     @Override
     public List<Claim> getWorldClaims() {
+        List<Claim> claims = new ArrayList<>();
+        claims.addAll(this.worldClaims);
+        return claims;
+    }
+
+    public Set<Claim> getInternalWorldClaims() {
         return this.worldClaims;
     }
 
@@ -449,18 +491,26 @@ public class GPClaimManager implements ClaimManager {
         this.worldProperties = null;
     }
 
-    public Claim getClaimAtPlayer(GPPlayerData playerData, Location<World> location) {
-        return this.getClaimAt(location, (GPClaim) playerData.lastClaim.get());
-    }
-
     @Override
     public Claim getClaimAt(Location<World> location) {
-        return this.getClaimAt(location, null);
+        return this.getClaimAt(location, false);
+    }
+
+    public Claim getClaimAt(Location<World> location, boolean useBorderBlockRadius) {
+        return this.getClaimAt(location, null, null, useBorderBlockRadius);
+    }
+
+    public Claim getClaimAtPlayer(Location<World> location, GPPlayerData playerData) {
+        return this.getClaimAt(location, (GPClaim) playerData.lastClaim.get(), playerData, false);
+    }
+
+    public Claim getClaimAtPlayer(Location<World> location, GPPlayerData playerData, boolean useBorderBlockRadius) {
+        return this.getClaimAt(location, (GPClaim) playerData.lastClaim.get(), playerData, useBorderBlockRadius);
     }
 
     // gets the claim at a specific location
     // ignoreHeight = TRUE means that a location UNDER an existing claim will return the claim
-    public Claim getClaimAt(Location<World> location, GPClaim cachedClaim) {
+    public Claim getClaimAt(Location<World> location, GPClaim cachedClaim, GPPlayerData playerData, boolean useBorderBlockRadius) {
         //GPTimings.CLAIM_GETCLAIM.startTimingIfSync();
         // check cachedClaim guess first. if the location is inside it, we're done
         if (cachedClaim != null && !cachedClaim.isWilderness() && cachedClaim.contains(location, true)) {
@@ -469,6 +519,25 @@ public class GPClaimManager implements ClaimManager {
         }
 
         Set<Claim> claimsInChunk = this.getInternalChunksToClaimsMap().get(ChunkPos.asLong(location.getBlockX() >> 4, location.getBlockZ() >> 4));
+        if (useBorderBlockRadius && (playerData != null && !playerData.ignoreBorderCheck)) {
+            final int borderBlockRadius = GriefPreventionPlugin.getActiveConfig(location.getExtent().getUniqueId()).getConfig().claim.borderBlockRadius;
+            // if borderBlockRadius > 0, check surrounding chunks
+            if (borderBlockRadius > 0) {
+                for (Direction direction : BlockUtils.ORDINAL_SET) {
+                    Location<World> currentLocation = location;
+                    for (int i = 0; i < borderBlockRadius; i++) { // Handle depth
+                        currentLocation = currentLocation.getBlockRelative(direction); 
+                        Set<Claim> relativeClaims = this.getInternalChunksToClaimsMap().get(ChunkPos.asLong(currentLocation.getBlockX() >> 4, currentLocation.getBlockZ() >> 4));
+                        if (relativeClaims != null) {
+                            if (claimsInChunk == null) {
+                                claimsInChunk = new HashSet<>();
+                            }
+                            claimsInChunk.addAll(relativeClaims);
+                        }
+                    }
+                }
+            }
+        }
         if (claimsInChunk == null) {
             //GPTimings.CLAIM_GETCLAIM.stopTimingIfSync();
             return this.getWildernessClaim();
@@ -476,42 +545,38 @@ public class GPClaimManager implements ClaimManager {
 
         // TODO change to check deepest level and work its way up to root
         for (Claim claim : claimsInChunk) {
-            final GPClaim gpClaim = (GPClaim) claim;
-            if (gpClaim.contains(location)) {
-                // when we find a top level claim, if the location is in one of its children,
-                // return the child claim, not the top level claim
-                for (int i = 0; i < gpClaim.children.size(); i++) {
-                    GPClaim child = (GPClaim) gpClaim.children.get(i);
-                    // check if child has children (Town -> Basic -> Subdivision)
-                    for (int j = 0; j < child.children.size(); j++) {
-                        GPClaim innerChild = (GPClaim) child.children.get(j);
-                        for (int k = 0; k < innerChild.children.size(); k++) {
-                            Claim subChild = innerChild.children.get(k);
-                            if (subChild.contains(location)) {
-                               // GPTimings.CLAIM_GETCLAIM.stopTimingIfSync();
-                                return subChild;
-                            }
-                        }
-
-                        if (innerChild.contains(location)) {
-                            //GPTimings.CLAIM_GETCLAIM.stopTimingIfSync();
-                            return innerChild;
-                        }
-                    }
-                    if (child.contains(location)) {
-                        //GPTimings.CLAIM_GETCLAIM.stopTimingIfSync();
-                        return child;
-                    }
-                }
-
-                //GPTimings.CLAIM_GETCLAIM.stopTimingIfSync();
-                return gpClaim;
+            GPClaim foundClaim = findClaim((GPClaim) claim, location, playerData, useBorderBlockRadius);
+            if (foundClaim != null) {
+                return foundClaim;
             }
         }
 
         //GPTimings.CLAIM_GETCLAIM.stopTimingIfSync();
         // if no claim found, return the world claim
         return this.getWildernessClaim();
+    }
+
+    private GPClaim findClaim(GPClaim claim, Location<World> location, GPPlayerData playerData, boolean useBorderBlockRadius) {
+        if (claim.contains(location, playerData, useBorderBlockRadius)) {
+            // when we find a top level claim, if the location is in one of its children,
+            // return the child claim, not the top level claim
+            for (Claim childClaim : claim.children) {
+                GPClaim child = (GPClaim) childClaim;
+                if (!child.children.isEmpty()) {
+                    GPClaim innerChild = findClaim(child, location, playerData, useBorderBlockRadius);
+                    if (innerChild != null) {
+                        return innerChild;
+                    }
+                }
+                // check if child has children (Town -> Basic -> Subdivision)
+                if (child.contains(location, playerData, useBorderBlockRadius)) {
+                    //GPTimings.CLAIM_GETCLAIM.stopTimingIfSync();
+                    return child;
+                }
+            }
+            return claim;
+        }
+        return null;
     }
 
     @Override

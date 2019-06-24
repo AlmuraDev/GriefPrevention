@@ -47,7 +47,6 @@ import me.ryanhamshire.griefprevention.configuration.type.GlobalConfig;
 import me.ryanhamshire.griefprevention.event.GPDeleteClaimEvent;
 import me.ryanhamshire.griefprevention.permission.GPOptions;
 import me.ryanhamshire.griefprevention.permission.GPPermissions;
-import net.minecraft.util.math.ChunkPos;
 import org.spongepowered.api.Sponge;
 import org.spongepowered.api.command.CommandSource;
 import org.spongepowered.api.entity.living.player.User;
@@ -57,7 +56,6 @@ import org.spongepowered.api.service.permission.SubjectData;
 import org.spongepowered.api.service.user.UserStorageService;
 import org.spongepowered.api.text.Text;
 import org.spongepowered.api.util.Tristate;
-import org.spongepowered.api.world.Chunk;
 import org.spongepowered.api.world.Location;
 import org.spongepowered.api.world.World;
 import org.spongepowered.api.world.storage.WorldProperties;
@@ -493,9 +491,9 @@ public abstract class DataStore {
         }
 
         for (GPClaimManager claimWorldManager : this.claimWorldManagers.values()) {
-            List<Claim> claims = claimWorldManager.getInternalPlayerClaims(playerID);
+            Set<Claim> claims = claimWorldManager.getInternalPlayerClaims(playerID);
             if (playerID == null) {
-                claims = claimWorldManager.getWorldClaims();
+                claims = claimWorldManager.getInternalWorldClaims();
             }
             if (claims == null) {
                 continue;
@@ -555,52 +553,29 @@ public abstract class DataStore {
         return resultNames;
     }
 
-    // gets all the claims "near" a location
-    public List<Claim> getNearbyClaims(Location<World> location) {
-        List<Claim> claims = new ArrayList<>();
-        GPClaimManager claimWorldManager = this.getClaimWorldManager(location.getExtent().getProperties());
-        if (claimWorldManager == null) {
-            return claims;
-        }
-
-        Optional<Chunk> lesserChunk = location.getExtent().getChunkAtBlock(location.sub(50, 0, 50).getBlockPosition());
-        Optional<Chunk> greaterChunk = location.getExtent().getChunkAtBlock(location.add(50, 0, 50).getBlockPosition());
-
-        if (lesserChunk.isPresent() && greaterChunk.isPresent()) {
-            for (int chunkX = lesserChunk.get().getPosition().getX(); chunkX <= greaterChunk.get().getPosition().getX(); chunkX++) {
-                for (int chunkZ = lesserChunk.get().getPosition().getZ(); chunkZ <= greaterChunk.get().getPosition().getZ(); chunkZ++) {
-                    Optional<Chunk> chunk = location.getExtent().getChunk(chunkX, 0, chunkZ);
-                    if (chunk.isPresent()) {
-                        Set<Claim> claimsInChunk = claimWorldManager.getInternalChunksToClaimsMap().get(ChunkPos.asLong(chunkX, chunkZ));
-                        if (claimsInChunk != null) {
-                            for (Claim claim : claimsInChunk) {
-                                final GPClaim gpClaim = (GPClaim) claim;
-                                if (gpClaim.parent == null && !claims.contains(claim)) {
-                                    claims.add(claim);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        return claims;
+    public GPClaim getClaimAt(Location<World> location) {
+        GPClaimManager claimManager = this.getClaimWorldManager(location.getExtent().getProperties());
+        return (GPClaim) claimManager.getClaimAt(location);
     }
 
     public GPClaim getClaimAtPlayer(GPPlayerData playerData, Location<World> location) {
         GPClaimManager claimManager = this.getClaimWorldManager(location.getExtent().getProperties());
-        return (GPClaim) claimManager.getClaimAtPlayer(playerData, location);
+        return (GPClaim) claimManager.getClaimAtPlayer(location, playerData);
     }
 
-    public GPClaim getClaimAt(Location<World> location) {
+    public GPClaim getClaimAtPlayer(Location<World> location, GPPlayerData playerData, boolean useBorderBlockRadius) {
         GPClaimManager claimManager = this.getClaimWorldManager(location.getExtent().getProperties());
-        return (GPClaim) claimManager.getClaimAt(location, null);
+        return (GPClaim) claimManager.getClaimAt(location, null, playerData, useBorderBlockRadius);
+    }
+
+    public GPClaim getClaimAtPlayer(Location<World> location, GPClaim cachedClaim, GPPlayerData playerData, boolean useBorderBlockRadius) {
+        GPClaimManager claimManager = this.getClaimWorldManager(location.getExtent().getProperties());
+        return (GPClaim) claimManager.getClaimAt(location, cachedClaim, playerData, useBorderBlockRadius);
     }
 
     public GPClaim getClaimAt(Location<World> location, GPClaim cachedClaim) {
         GPClaimManager claimManager = this.getClaimWorldManager(location.getExtent().getProperties());
-        return (GPClaim) claimManager.getClaimAt(location, cachedClaim);
+        return (GPClaim) claimManager.getClaimAt(location, cachedClaim, null, false);
     }
 
     public GPPlayerData getPlayerData(World world, UUID playerUniqueId) {
@@ -634,14 +609,13 @@ public abstract class DataStore {
     public GPClaimManager getClaimWorldManager(WorldProperties worldProperties) {
         GPClaimManager claimWorldManager = null;
         if (worldProperties == null) {
-            claimWorldManager = this.claimWorldManagers.get(Sponge.getServer().getDefaultWorld().get().getUniqueId());
-        } else {
-            claimWorldManager = this.claimWorldManagers.get(worldProperties.getUniqueId());
+            worldProperties = Sponge.getServer().getDefaultWorld().get();
         }
+        claimWorldManager = this.claimWorldManagers.get(worldProperties.getUniqueId());
 
         if (claimWorldManager == null) {
-            claimWorldManager = new GPClaimManager(worldProperties);
-            this.claimWorldManagers.put(worldProperties.getUniqueId(), claimWorldManager);
+            registerWorld(worldProperties);
+            claimWorldManager = this.claimWorldManagers.get(worldProperties.getUniqueId());
         }
         return claimWorldManager;
     }
@@ -680,7 +654,6 @@ public abstract class DataStore {
         CLAIM_FLAG_DEFAULTS.put(ClaimType.WILDERNESS, wildernessDefaults);
         this.setFlagDefaultPermissions(contexts, wildernessDefaults);
         this.setOptionDefaultPermissions();
-        activeConfig.save();
     }
 
     private void setFlagDefaultPermissions(Set<Context> contexts, Map<String, Boolean> defaultFlags) {

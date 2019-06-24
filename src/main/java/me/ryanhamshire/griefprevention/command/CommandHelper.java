@@ -148,7 +148,6 @@ public class CommandHelper {
                     validateItemTarget(target)) {
                     return true;
                 }
-
                 return false;
             case ENTER_CLAIM :
             case EXIT_CLAIM :
@@ -160,13 +159,16 @@ public class CommandHelper {
                     validateItemTarget(target)) {
                     return true;
                 }
-
                 return false;
             case INTERACT_INVENTORY :
-            case LIQUID_FLOW :
-                return validateBlockTarget(target);
+                if (validateEntityTarget(target) ||
+                    validateBlockTarget(target)) {
+                    return true;
+                }
+                return false;
             case INTERACT_BLOCK_PRIMARY :
             case INTERACT_BLOCK_SECONDARY :
+            case LIQUID_FLOW :
                 return validateBlockTarget(target);
             case ENTITY_CHUNK_SPAWN :
             case ENTITY_SPAWN :
@@ -530,7 +532,7 @@ public class CommandHelper {
         }
     }
 
-    public static void showClaims(CommandSource src, List<Claim> claims) {
+    public static void showClaims(CommandSource src, Set<Claim> claims) {
         if (claims.isEmpty()) {
             // do nothing
             return;
@@ -538,11 +540,18 @@ public class CommandHelper {
         showClaims(src, claims, 0, false);
     }
 
-    public static void showClaims(CommandSource src, List<Claim> claims, int height, boolean visualizeClaims) {
+    public static void showOverlapClaims(CommandSource src, Set<Claim> claims, int height) {
+        showClaims(src, claims, height, true, true);
+    }
+
+    public static void showClaims(CommandSource src, Set<Claim> claims, int height, boolean visualizeClaims) {
+        showClaims(src, claims, height, visualizeClaims, false);
+    }
+
+    public static void showClaims(CommandSource src, Set<Claim> claims, int height, boolean visualizeClaims, boolean overlap) {
         final String worldName = src instanceof Player ? ((Player) src).getWorld().getName() : Sponge.getServer().getDefaultWorldName();
         final boolean canListOthers = src.hasPermission(GPPermissions.LIST_OTHER_CLAIMS);
-        List<Text> claimsTextList = generateClaimTextList(new ArrayList<Text>(), claims, worldName, null, src, createShowClaimsConsumer(src, claims, height, visualizeClaims), canListOthers, false);
-
+        List<Text> claimsTextList = generateClaimTextList(new ArrayList<Text>(), claims, worldName, null, src, createShowClaimsConsumer(src, claims, height, visualizeClaims), canListOthers, false, overlap);
         if (visualizeClaims && src instanceof Player) {
             Player player = (Player) src;
             final GPPlayerData playerData = GriefPreventionPlugin.instance.dataStore.getOrCreatePlayerData(player.getWorld(), player.getUniqueId());
@@ -553,9 +562,11 @@ public class CommandHelper {
                 Visualization visualization = Visualization.fromClaims(claims, playerData.optionClaimCreateMode == 1 ? height : player.getProperty(EyeLocationProperty.class).get().getValue().getFloorY(), player.getLocation(), playerData, null);
                 visualization.apply(player);
             } else {
-                GPClaim gpClaim = (GPClaim) claims.get(0);
-                gpClaim.getVisualizer().createClaimBlockVisuals(height, player.getLocation(), playerData);
-                gpClaim.getVisualizer().apply(player);
+                for (Claim claim : claims) {
+                    final GPClaim gpClaim = (GPClaim) claim;
+                    gpClaim.getVisualizer().createClaimBlockVisuals(height, player.getLocation(), playerData);
+                    gpClaim.getVisualizer().apply(player);
+                }
             }
         }
 
@@ -565,22 +576,26 @@ public class CommandHelper {
         paginationBuilder.sendTo(src);
     }
 
-    private static Consumer<CommandSource> createShowClaimsConsumer(CommandSource src, List<Claim> claims, int height, boolean visualizeClaims) {
+    private static Consumer<CommandSource> createShowClaimsConsumer(CommandSource src, Set<Claim> claims, int height, boolean visualizeClaims) {
         return consumer -> {
             showClaims(src, claims, height, visualizeClaims);
         };
     }
 
-    public static List<Text> generateClaimTextList(List<Text> claimsTextList, List<Claim> claimList, String worldName, User user, CommandSource src, Consumer<CommandSource> returnCommand, boolean canListOthers, boolean listChildren) {
+    public static List<Text> generateClaimTextList(List<Text> claimsTextList, Set<Claim> claimList, String worldName, User user, CommandSource src, Consumer<CommandSource> returnCommand, boolean canListOthers, boolean listChildren) {
+        return generateClaimTextList(claimsTextList, claimList, worldName, user, src, returnCommand, canListOthers, listChildren, false);
+    }
+
+    public static List<Text> generateClaimTextList(List<Text> claimsTextList, Set<Claim> claimList, String worldName, User user, CommandSource src, Consumer<CommandSource> returnCommand, boolean canListOthers, boolean listChildren, boolean overlap) {
         final User sourceUser = src instanceof User ? (User) src : null;
         if (claimList.size() > 0) {
             for (Claim playerClaim : claimList) {
                 GPClaim claim = (GPClaim) playerClaim;
-                if (!listChildren && claim.isSubdivision() && !claim.getData().getEconomyData().isForSale()) {
+                if (!overlap && !listChildren && claim.isSubdivision() && !claim.getData().getEconomyData().isForSale()) {
                     continue;
                 }
-                // Only list claims trusted
-                if (sourceUser != null && !claim.isUserTrusted(sourceUser, TrustType.ACCESSOR) && !canListOthers) {
+                // Only list claims trusted if not an overlap claim
+                if (!overlap && sourceUser != null && !claim.isUserTrusted(sourceUser, TrustType.ACCESSOR) && !canListOthers) {
                     continue;
                 }
 
@@ -630,7 +645,7 @@ public class CommandHelper {
 
                 List<Text> childrenTextList = new ArrayList<>();
                 if (!listChildren) {
-                    childrenTextList = generateClaimTextList(new ArrayList<Text>(), claim.getChildren(true), worldName, user, src, returnCommand, canListOthers, true);
+                    childrenTextList = generateClaimTextList(new ArrayList<Text>(), claim.getInternalChildren(true), worldName, user, src, returnCommand, canListOthers, true);
                 }
                 final Player player = src instanceof Player ? (Player) src : null;
                 Text buyClaim = Text.of();
@@ -1096,9 +1111,21 @@ public class CommandHelper {
             if (!playerData.canIgnoreClaim(gpClaim) && !playerData.canManageAdminClaims) {
                 // if not owner of claim, validate perms
                 if (!player.getUniqueId().equals(claim.getOwnerUniqueId())) {
-                    if (!player.hasPermission(GPPermissions.COMMAND_CLAIM_INFO_TELEPORT_OTHERS) && !gpClaim.isUserTrusted(player, TrustType.ACCESSOR)) {
+                    if (!player.hasPermission(GPPermissions.COMMAND_CLAIM_INFO_TELEPORT_OTHERS)) {
                         player.sendMessage(Text.of(TextColors.RED, "You do not have permission to use the teleport feature in this claim.")); 
                         return;
+                    }
+                    if (!gpClaim.isUserTrusted(player, TrustType.ACCESSOR)) {
+                        if (GriefPreventionPlugin.instance.economyService.isPresent()) {
+                            // Allow non-trusted to TP to claims for sale
+                            if (!gpClaim.getEconomyData().isForSale()) {
+                                player.sendMessage(Text.of(TextColors.RED, "You are not trusted to use the teleport feature in this claim.")); 
+                                return;
+                            }
+                        } else {
+                            player.sendMessage(Text.of(TextColors.RED, "You are not trusted to use the teleport feature in this claim.")); 
+                            return;
+                        }
                     }
                 } else if (!player.hasPermission(GPPermissions.COMMAND_CLAIM_INFO_TELEPORT_BASE)) {
                     player.sendMessage(Text.of(TextColors.RED, "You do not have permission to use the teleport feature in your claim.")); 

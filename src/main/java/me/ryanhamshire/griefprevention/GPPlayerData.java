@@ -27,6 +27,7 @@ package me.ryanhamshire.griefprevention;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import me.ryanhamshire.griefprevention.api.claim.Claim;
 import me.ryanhamshire.griefprevention.api.claim.ClaimType;
 import me.ryanhamshire.griefprevention.api.data.PlayerData;
@@ -56,6 +57,7 @@ import org.spongepowered.common.SpongeImpl;
 
 import java.lang.ref.WeakReference;
 import java.net.InetAddress;
+import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
@@ -72,7 +74,7 @@ public class GPPlayerData implements PlayerData {
     private WeakReference<Subject> playerSubject;
 
     // the player's claims
-    private List<Claim> claimList;
+    private Set<Claim> claimList;
 
     private PlayerStorageData playerStorage;
 
@@ -206,6 +208,8 @@ public class GPPlayerData implements PlayerData {
     public int optionCreateClaimLimitSubdivision = GPOptions.DEFAULT_CREATE_CLAIM_LIMIT_SUBDIVISION;
     public int optionCreateClaimLimitTown = GPOptions.DEFAULT_CREATE_CLAIM_LIMIT_TOWN;
     public int optionInitialClaimBlocks = GPOptions.DEFAULT_INITIAL_CLAIM_BLOCKS;
+    public int optionRadiusClaimInspect = GPOptions.DEFAULT_RADIUS_CLAIM_INSPECT;
+    public int optionRadiusClaimList = GPOptions.DEFAULT_RADIUS_CLAIM_LIST;
     public int optionMaxAccruedBlocks = GPOptions.DEFAULT_MAX_ACCRUED_BLOCKS;
     public int optionMaxClaimLevel = GPOptions.DEFAULT_MAX_CLAIM_LEVEL;
     public int optionMaxClaimSizeBasicX = GPOptions.DEFAULT_MAX_CLAIM_SIZE_BASIC_X;
@@ -241,6 +245,7 @@ public class GPPlayerData implements PlayerData {
     // cached permission values
     public boolean canManageAdminClaims = false;
     public boolean canManageWilderness = false;
+    public boolean ignoreBorderCheck = false;
     public boolean ignoreAdminClaims = false;
     public boolean ignoreBasicClaims = false;
     public boolean ignoreTowns = false;
@@ -250,7 +255,7 @@ public class GPPlayerData implements PlayerData {
     public boolean showVisualFillers = true;
     private boolean checkedDimensionHeight = false;
 
-    public GPPlayerData(WorldProperties worldProperties, UUID playerUniqueId, PlayerStorageData playerStorage, GriefPreventionConfig<?> activeConfig, List<Claim> claims) {
+    public GPPlayerData(WorldProperties worldProperties, UUID playerUniqueId, PlayerStorageData playerStorage, GriefPreventionConfig<?> activeConfig, Set<Claim> claims) {
         this.worldProperties = worldProperties;
         this.playerID = playerUniqueId;
         this.playerStorage = playerStorage;
@@ -276,6 +281,8 @@ public class GPPlayerData implements PlayerData {
             this.optionCreateClaimLimitSubdivision = PlayerUtils.getOptionIntValue(activeContexts, subject, GPOptions.CREATE_CLAIM_LIMIT_SUBDIVISION, this.optionCreateClaimLimitSubdivision);
             this.optionCreateClaimLimitTown = PlayerUtils.getOptionIntValue(activeContexts, subject, GPOptions.CREATE_CLAIM_LIMIT_TOWN, this.optionCreateClaimLimitTown);
             this.optionInitialClaimBlocks = PlayerUtils.getOptionIntValue(activeContexts, subject, GPOptions.INITIAL_CLAIM_BLOCKS, this.optionInitialClaimBlocks);
+            this.optionRadiusClaimInspect = PlayerUtils.getOptionIntValue(activeContexts, subject, GPOptions.RADIUS_CLAIM_INSPECT, this.optionRadiusClaimInspect);
+            this.optionRadiusClaimList = PlayerUtils.getOptionIntValue(activeContexts, subject, GPOptions.RADIUS_CLAIM_LIST, this.optionRadiusClaimList);
             this.optionMaxAccruedBlocks = PlayerUtils.getOptionIntValue(activeContexts, subject, GPOptions.MAX_ACCRUED_BLOCKS, this.optionMaxAccruedBlocks);
             this.optionMaxClaimLevel = PlayerUtils.getOptionIntValue(activeContexts, subject, GPOptions.MAX_CLAIM_LEVEL, this.optionMaxClaimLevel);
             this.optionMaxClaimSizeBasicX = PlayerUtils.getOptionIntValue(activeContexts, subject, GPOptions.MAX_CLAIM_SIZE_BASIC_X, this.optionMaxClaimSizeBasicX);
@@ -308,6 +315,7 @@ public class GPPlayerData implements PlayerData {
             this.optionTaxRateTownBasic = PlayerUtils.getOptionDoubleValue(activeContexts, subject, GPOptions.TAX_RATE_TOWN_BASIC, this.optionTaxRateTownBasic);
             this.optionTaxRateTownSubdivision = PlayerUtils.getOptionDoubleValue(activeContexts, subject, GPOptions.TAX_RATE_TOWN_BASIC, this.optionTaxRateTownSubdivision);
             // permissions
+            this.ignoreBorderCheck = subject.hasPermission(activeContexts, GPPermissions.IGNORE_BORDER_CHECK);
             this.ignoreAdminClaims = subject.hasPermission(activeContexts, GPPermissions.IGNORE_CLAIMS_ADMIN);
             this.ignoreTowns = subject.hasPermission(activeContexts, GPPermissions.IGNORE_CLAIMS_TOWN);
             this.ignoreWilderness = subject.hasPermission(activeContexts, GPPermissions.IGNORE_CLAIMS_WILDERNESS);
@@ -340,6 +348,7 @@ public class GPPlayerData implements PlayerData {
     public void revertActiveVisual(Player player) {
         if (this.visualRevertTask != null) {
             this.visualRevertTask.cancel();
+            this.visualRevertTask = null;
         }
 
         if (this.visualClaimId != null) {
@@ -545,11 +554,21 @@ public class GPPlayerData implements PlayerData {
     }
 
     public List<Claim> getClaims() {
-        return ImmutableList.copyOf(this.claimList);
+        return new ArrayList<>(this.claimList);
     }
 
-    public List<Claim> getInternalClaims() {
+    public Set<Claim> getInternalClaims() {
         return this.claimList;
+    }
+
+    public int getClaimTypeCount(ClaimType type) {
+        int count = 0;
+        for (Claim claim : this.claimList) {
+            if (claim.getType() == type) {
+                count++;
+            }
+        }
+        return count;
     }
 
     public void setLastCollideEntityData(int entityId, boolean result) {
