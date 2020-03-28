@@ -117,8 +117,11 @@ public class FlatFileDataStore extends DataStore {
 
     public void registerWorld(WorldProperties worldProperties) {
         DimensionType dimType = worldProperties.getDimensionType();
-        Path dimPath = rootConfigPath.resolve(((DimensionTypeBridge) dimType).getModId()).resolve(((DimensionTypeBridge) dimType).getEnumName());
-        if (!Files.exists(dimPath.resolve(worldProperties.getWorldName()))) {
+        final String[] parts = ((DimensionTypeBridge) dimType).bridge$getSanitizedId().split(":");
+        final String modId = parts[0];
+        final String name = parts[1];
+        Path dimPath = rootConfigPath.resolve(modId).resolve(name);
+        if (Files.notExists(dimPath.resolve(worldProperties.getWorldName()))) {
             try {
                 Files.createDirectories(dimPath.resolve(worldProperties.getWorldName()));
             } catch (IOException e) {
@@ -139,17 +142,17 @@ public class FlatFileDataStore extends DataStore {
 
         try {
             // Create data folders if they do not exist
-            if (!Files.exists(newWorldDataPath.resolve("ClaimData"))) {
+            if (Files.notExists(newWorldDataPath.resolve("ClaimData"))) {
                 Files.createDirectories(newWorldDataPath.resolve("ClaimData"));
             }
-            if (!Files.exists(newWorldDataPath.resolve("ClaimData").resolve("wilderness"))) {
+            if (Files.notExists(newWorldDataPath.resolve("ClaimData").resolve("wilderness"))) {
                 Files.createDirectories(newWorldDataPath.resolve("ClaimData").resolve("wilderness"));
             }
             if (DataStore.USE_GLOBAL_PLAYER_STORAGE) {
-                if (!globalPlayerDataPath.toFile().exists()) {
+                if (Files.notExists(globalPlayerDataPath)) {
                     Files.createDirectories(globalPlayerDataPath);
                 }
-            } else if (!Files.exists(newWorldDataPath.resolve("PlayerData"))) {
+            } else if (Files.notExists(newWorldDataPath.resolve("PlayerData"))) {
                 Files.createDirectories(newWorldDataPath.resolve("PlayerData"));
             }
         } catch (Exception e) {
@@ -161,7 +164,10 @@ public class FlatFileDataStore extends DataStore {
     public void loadWorldData(World world) {
         final WorldProperties worldProperties = world.getProperties();
         final DimensionType dimType = worldProperties.getDimensionType();
-        final Path dimPath = rootConfigPath.resolve(((DimensionTypeBridge) dimType).getModId()).resolve(((DimensionTypeBridge) dimType).getEnumName());
+        final String[] parts = ((DimensionTypeBridge) dimType).bridge$getSanitizedId().split(":");
+        final String modId = parts[0].toLowerCase();
+        final String name = parts[1].toLowerCase();
+        final Path dimPath = rootConfigPath.resolve(modId).resolve(name);
         final Path newWorldDataPath = dimPath.resolve(worldProperties.getWorldName());
         GPClaimManager claimWorldManager = this.claimWorldManagers.get(worldProperties.getUniqueId());
         if (claimWorldManager == null) {
@@ -359,7 +365,9 @@ public class FlatFileDataStore extends DataStore {
 
         if (claimFile.getParentFile().getName().equalsIgnoreCase("claimdata")) {
             final Path newPath = claimStorage.filePath.getParent().resolve(type.name().toLowerCase());
-            Files.createDirectories(newPath);
+            if (Files.notExists(newPath)) {
+                Files.createDirectories(newPath);
+            }
             Files.move(claimStorage.filePath, newPath.resolve(fileName));
             claimStorage.filePath = newPath.resolve(fileName);
             claimStorage = new ClaimStorageData(claimStorage.filePath, worldProperties.getUniqueId());

@@ -138,7 +138,7 @@ public class BlockEventHandler {
         Location<World> sourceLocation = null;
         boolean isVanillaBlock = true;
         if (!pistonExtend && isBlockEvent) {
-            isVanillaBlock = ((BlockBridge) eventBlock.getBlockState().getType()).isVanilla();
+            isVanillaBlock = ((BlockBridge) eventBlock.getBlockState().getType()).bridge$isVanilla();
             if (isVanillaBlock) {
                 return;
             }
@@ -479,7 +479,7 @@ public class BlockEventHandler {
             return;
         }
 
-        BlockPos collidePos = ((LocationBridge)(Object) event.getTargetLocation()).getBlockPos();
+        BlockPos collidePos = ((LocationBridge)(Object) event.getTargetLocation()).bridge$getBlockPos();
         short shortPos = BlockUtils.blockPosToShort(collidePos);
         int entityId = ((net.minecraft.entity.Entity) source).getEntityId();
         BlockPosCache entityBlockCache = BlockUtils.ENTITY_BLOCK_CACHE.get(entityId);
