@@ -77,12 +77,13 @@ public class CommandClaimSellBlocks implements CommandExecutor {
         }
 
         GPPlayerData playerData = GriefPreventionPlugin.instance.dataStore.getOrCreatePlayerData(player.getWorld(), player.getUniqueId());
+        playerData.refreshPlayerOptions();
         int availableBlocks = playerData.getRemainingClaimBlocks();
         Optional<Integer> blockCountOpt = ctx.getOne("numberOfBlocks");
         if (!blockCountOpt.isPresent()) {
             final Text message = GriefPreventionPlugin.instance.messageData.economyBlockPurchaseCost
                     .apply(ImmutableMap.of(
-                    "cost", activeConfig.getConfig().economy.economyClaimBlockSell,
+                    "cost", playerData.optionClaimBlockSell,
                     "balance", availableBlocks)).build();
             GriefPreventionPlugin.sendMessage(player, message);
             return CommandResult.success();
@@ -98,7 +99,8 @@ public class CommandClaimSellBlocks implements CommandExecutor {
             }
 
             // attempt to compute value and deposit it
-            double totalValue = blockCount * activeConfig.getConfig().economy.economyClaimBlockSell;
+            double totalValue = blockCount * playerData.optionClaimBlockSell;
+
             try (final CauseStackManager.StackFrame frame = Sponge.getCauseStackManager().pushCauseFrame()) {
                 Sponge.getCauseStackManager().pushCause(player);
                 Sponge.getCauseStackManager().addContext(GriefPreventionPlugin.PLUGIN_CONTEXT, GriefPreventionPlugin.instance);

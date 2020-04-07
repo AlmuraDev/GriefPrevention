@@ -74,6 +74,11 @@ public class GPOptions {
     public static final String TAX_RATE_TOWN_BASIC = "griefprevention.tax-rate-town-basic";
     public static final String TAX_RATE_TOWN_SUBDIVISION = "griefprevention.tax-rate-town-subdivision";
     public static final String TOWN_PURCHASE_COST = "griefprevention.town-purchase-cost";
+
+    // Almura Custom
+    public static final String CLAIM_BLOCK_COST = "griefprevention.claim-block-cost";
+    public static final String CLAIM_BLOCK_SELL = "griefprevention.claim-block-sell";
+
     // MCClans options
     public static final String LEADER_CLAIM_BOOST = "mcclans.leader-claim-boost";
     public static final String MEMBER_CLAIM_BOOST = "mcclans.member-claim-boost";

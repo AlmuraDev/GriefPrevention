@@ -242,6 +242,10 @@ public class GPPlayerData implements PlayerData {
     public double optionTaxRateTownBasic = GPOptions.DEFAULT_TAX_RATE_TOWN_BASIC;
     public double optionTaxRateTownSubdivision = GPOptions.DEFAULT_TAX_RATE_TOWN_SUBDIVISION;
 
+    // Almura Custom
+    public double optionClaimBlockCost = 0.0;
+    public double optionClaimBlockSell = 0.0;
+
     // cached permission values
     public boolean canManageAdminClaims = false;
     public boolean canManageWilderness = false;
@@ -314,6 +318,11 @@ public class GPPlayerData implements PlayerData {
             this.optionTaxRateTown = PlayerUtils.getOptionDoubleValue(activeContexts, subject, GPOptions.TAX_RATE_TOWN, this.optionTaxRateTown);
             this.optionTaxRateTownBasic = PlayerUtils.getOptionDoubleValue(activeContexts, subject, GPOptions.TAX_RATE_TOWN_BASIC, this.optionTaxRateTownBasic);
             this.optionTaxRateTownSubdivision = PlayerUtils.getOptionDoubleValue(activeContexts, subject, GPOptions.TAX_RATE_TOWN_BASIC, this.optionTaxRateTownSubdivision);
+
+            // Almura Custom
+            this.optionClaimBlockCost = PlayerUtils.getOptionDoubleValue(activeContexts, subject, GPOptions.CLAIM_BLOCK_COST, this.optionClaimBlockCost);
+            this.optionClaimBlockSell = PlayerUtils.getOptionDoubleValue(activeContexts, subject, GPOptions.CLAIM_BLOCK_SELL, this.optionClaimBlockSell);
+
             // permissions
             this.ignoreBorderCheck = subject.hasPermission(activeContexts, GPPermissions.IGNORE_BORDER_CHECK);
             this.ignoreAdminClaims = subject.hasPermission(activeContexts, GPPermissions.IGNORE_CLAIMS_ADMIN);

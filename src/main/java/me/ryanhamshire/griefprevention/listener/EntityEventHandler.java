@@ -94,8 +94,6 @@ import org.spongepowered.api.world.explosion.Explosion;
 import org.spongepowered.api.world.storage.WorldProperties;
 import org.spongepowered.common.SpongeImplHooks;
 import org.spongepowered.common.bridge.OwnershipTrackedBridge;
-import org.spongepowered.common.data.util.NbtDataUtil;
-import org.spongepowered.common.bridge.entity.EntityBridge;
 
 import java.lang.ref.WeakReference;
 import java.time.Instant;

@@ -29,6 +29,7 @@ import com.google.common.collect.ImmutableMap;
 import me.ryanhamshire.griefprevention.GPPlayerData;
 import me.ryanhamshire.griefprevention.GriefPreventionPlugin;
 import me.ryanhamshire.griefprevention.configuration.GriefPreventionConfig;
+import me.ryanhamshire.griefprevention.permission.GPOptions;
 import org.spongepowered.api.Sponge;
 import org.spongepowered.api.command.CommandException;
 import org.spongepowered.api.command.CommandResult;
@@ -87,16 +88,16 @@ public class CommandClaimBuyBlocks implements CommandExecutor {
         Optional<Integer> blockCountOpt = ctx.getOne("numberOfBlocks");
         double balance = playerAccount.getBalance(GriefPreventionPlugin.instance.economyService.get().getDefaultCurrency()).doubleValue();
         // if no parameter, just tell player cost per block and balance
+        GPPlayerData playerData = GriefPreventionPlugin.instance.dataStore.getOrCreatePlayerData(player.getWorld(), player.getUniqueId());
+        playerData.refreshPlayerOptions();
         if (!blockCountOpt.isPresent()) {
             final Text message = GriefPreventionPlugin.instance.messageData.economyBlockPurchaseCost
                     .apply(ImmutableMap.of(
-                    "cost", activeConfig.getConfig().economy.economyClaimBlockCost,
+                    "cost", playerData.optionClaimBlockCost,
                     "balance", balance)).build();
             GriefPreventionPlugin.sendMessage(player, message);
             return CommandResult.success();
         } else {
-            GPPlayerData playerData = GriefPreventionPlugin.instance.dataStore.getOrCreatePlayerData(player.getWorld(), player.getUniqueId());
-
             // try to parse number of blocks
             int blockCount = blockCountOpt.get();
 
@@ -105,7 +106,8 @@ public class CommandClaimBuyBlocks implements CommandExecutor {
                 return CommandResult.success();
             }
 
-            final double totalCost = blockCount * activeConfig.getConfig().economy.economyClaimBlockCost;
+            final double totalCost = blockCount * playerData.optionClaimBlockCost;
+
             final int newClaimBlockTotal = playerData.getAccruedClaimBlocks() + blockCount;
             if (newClaimBlockTotal > playerData.getMaxAccruedClaimBlocks()) {
                 // player has exceeded limit
