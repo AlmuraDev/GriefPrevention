@@ -77,7 +77,7 @@ public class CommandClaimSellBlocks implements CommandExecutor {
         }
 
         GPPlayerData playerData = GriefPreventionPlugin.instance.dataStore.getOrCreatePlayerData(player.getWorld(), player.getUniqueId());
-        playerData.refreshPlayerOptions();
+
         int availableBlocks = playerData.getRemainingClaimBlocks();
         Optional<Integer> blockCountOpt = ctx.getOne("numberOfBlocks");
         if (!blockCountOpt.isPresent()) {

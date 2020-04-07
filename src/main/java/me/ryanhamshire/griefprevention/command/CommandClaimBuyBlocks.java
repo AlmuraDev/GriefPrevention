@@ -89,7 +89,7 @@ public class CommandClaimBuyBlocks implements CommandExecutor {
         double balance = playerAccount.getBalance(GriefPreventionPlugin.instance.economyService.get().getDefaultCurrency()).doubleValue();
         // if no parameter, just tell player cost per block and balance
         GPPlayerData playerData = GriefPreventionPlugin.instance.dataStore.getOrCreatePlayerData(player.getWorld(), player.getUniqueId());
-        playerData.refreshPlayerOptions();
+
         if (!blockCountOpt.isPresent()) {
             final Text message = GriefPreventionPlugin.instance.messageData.economyBlockPurchaseCost
                     .apply(ImmutableMap.of(
